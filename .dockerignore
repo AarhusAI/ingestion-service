@@ -1,0 +1,11 @@
+# Exclude everything by default (allowlist approach)
+*
+
+# Allow only what the Dockerfile needs
+!pyproject.toml
+!app/
+
+# Deny patterns inside allowed dirs
+app/**/__pycache__
+app/**/*.pyc
+app/**/*.pyo

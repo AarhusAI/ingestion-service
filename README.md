@@ -1,0 +1,185 @@
+# Ingestion Service
+
+Document ingestion microservice for [Open WebUI](https://github.com/open-webui/open-webui).
+A standalone FastAPI service that runs a [Haystack v2](https://haystack.deepset.ai/)
+indexing pipeline (extract → chunk → embed → store) and writes Haystack-native documents
+to Qdrant. The pluggable extraction engine, dense embedder, and optional sparse embedder
+are all driven by configuration — the service isn't bound to any specific embedding model.
+
+Called by Open WebUI when `EXTERNAL_INGESTION_ENGINE=external`. The Open WebUI patch
+delegates to `PUT /api/v1/ingest` with either an S3 reference (preferred) or a multipart
+file upload.
+
+## Requirements
+
+- Docker and Docker Compose
+- [Task](https://taskfile.dev/) (Go Task runner)
+- A Qdrant instance (shared with the retrieval agent)
+- An OpenAI-compatible embedding endpoint (e.g. the `embed.itkdev.dk` proxy)
+- A Tika server reachable on the same network (when `EXTRACTION_ENGINE=tika`)
+
+## Quick Start
+
+### Local Development
+
+```shell
+cp .env.example .env
+# Edit .env — at minimum set API_KEY, EMBEDDING_API_BASE_URL, EMBEDDING_API_KEY
+
+# Generate a secure API key:
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# Set the output as API_KEY in .env and as INGESTION_API_KEY / EXTERNAL_INGESTION_API_KEY
+# in the Open WebUI deployment
+
+task setup          # starts container + installs dev deps (requires Traefik 'frontend' network)
+task logs           # tail ingestion container logs
+```
+
+Common task commands:
+
+```shell
+task up             # start containers
+task down           # stop containers
+task shell          # open bash shell in the ingestion container
+task install        # reinstall deps (pip install '.[dev]')
+task lint           # run all linters (ruff check + format --check)
+task lint:fix       # auto-fix lint issues
+task test           # run all tests (pytest -v)
+task test:coverage  # run tests with coverage report
+task ci             # lint + test
+```
+
+Run a single test:
+
+```shell
+docker compose exec ingestion pytest tests/test_ingest_endpoint.py -v
+```
+
+### Production Image
+
+```shell
+task build:image              # build + push to ghcr.io/aarhusai/ingestion-service:latest
+task build:image TAG=v1.0.0   # with specific tag
+```
+
+## Health Endpoints
+
+- `GET /health` — liveness probe (always 200 if the process is running)
+- `GET /health/ready` — readiness probe (verifies Qdrant connectivity, returns 503 if unreachable)
+
+## API
+
+### `PUT /api/v1/ingest`
+
+Two transport modes share one endpoint and dispatch on `Content-Type`.
+
+#### S3-reference mode (preferred)
+
+```http
+PUT /api/v1/ingest HTTP/1.1
+Authorization: Bearer <API_KEY>
+Content-Type: application/json
+
+{
+  "s3_bucket": "openwebui",
+  "s3_key": "files/abc/report.pdf",
+  "file_id": "abc",
+  "filename": "report.pdf",
+  "collection_name": "file-abc",
+  "collection_type": "file",
+  "user_id": "u-1",
+  "overwrite": true
+}
+```
+
+#### Multipart fallback
+
+```http
+PUT /api/v1/ingest HTTP/1.1
+Authorization: Bearer <API_KEY>
+Content-Type: multipart/form-data; boundary=...
+
+# fields:
+file=<binary>
+file_id=abc
+filename=report.pdf
+collection_name=file-abc
+collection_type=file
+user_id=u-1
+overwrite=true
+```
+
+#### Response
+
+```json
+{
+  "status": true,
+  "collection_name": "file-abc",
+  "chunks_count": 42
+}
+```
+
+#### Error
+
+```json
+{
+  "status": false,
+  "error": "human-readable message",
+  "code": "EXTRACTION_FAILED"
+}
+```
+
+Codes: `EXTRACTION_FAILED`, `EMBEDDING_FAILED`, `SPARSE_EMBEDDING_FAILED`,
+`QDRANT_WRITE_FAILED`, `S3_FETCH_FAILED`, `INVALID_REQUEST`, `PIPELINE_FAILED`.
+
+#### Idempotency
+
+When `overwrite=true` (default), all existing Qdrant points with matching
+`meta.file_id` are deleted before writing new chunks. Retries are safe — they
+delete-and-rewrite, no duplicates. On any pipeline failure the same delete runs
+as teardown, so partial writes never leak into Qdrant.
+
+## Configuration
+
+All config is via environment variables loaded by pydantic-settings. See
+`.env.example` for the full list. The settings that matter beyond their docstrings
+because they are **contracts with other services**:
+
+- `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY` (and the
+  retrieval agent's parallel value when querying the same data).
+- `EMBEDDING_MODEL`, `EMBEDDING_DIM`, and `EMBEDDING_PREFIX_DOC` must match
+  whatever the retrieval agent uses at query time. e5 needs `passage: ` on
+  documents and `query: ` on queries; bge-m3 takes no prefix; nomic uses
+  `search_document: ` / `search_query: `.
+- `QDRANT_INDEX` is the physical Qdrant collection. Defaults to
+  `ingestion_files` — distinct from Open WebUI's legacy multitenancy collections.
+- `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
+  the retrieval agent can use Qdrant's native hybrid query (RRF fusion) instead
+  of the legacy client-side BM25.
+
+## Supported Embedding Models
+
+| Model | Dim | Doc / query prefix | Native sparse |
+|---|---|---|---|
+| `intfloat/multilingual-e5-large` | 1024 | `passage: ` / `query: ` | — |
+| `BAAI/bge-m3` | 1024 | none / none | yes |
+| `jinaai/jina-embeddings-v3` | 1024 | task-specific | — |
+| `nomic-ai/nomic-embed-text-v1.5` | 768 | `search_document: ` / `search_query: ` | — |
+
+`EMBEDDING_PROVIDER`:
+- `openai-compat` → `OpenAIDocumentEmbedder` (the current `embed.itkdev.dk` path)
+- `fastembed` → `FastembedDocumentEmbedder` (in-process inference; supports BGE-M3 dense)
+- `tei` → routes through `OpenAIDocumentEmbedder` (TEI exposes an OpenAI-compatible endpoint)
+
+`SPARSE_EMBEDDING_PROVIDER`:
+- `fastembed` → `FastembedSparseDocumentEmbedder` (BGE-M3 sparse, BM42, SPLADE family)
+- `none` → no sparse stage, dense-only pipeline
+
+## Extraction Engines
+
+| `EXTRACTION_ENGINE` | Status | Notes |
+|---|---|---|
+| `tika` | day-one | Reuses the existing `tika` container in the parent stack |
+| `pypdf` | day-one | Lightweight, PDF-only |
+| `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
+| `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |

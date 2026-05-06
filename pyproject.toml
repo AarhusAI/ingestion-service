@@ -1,0 +1,50 @@
+[project]
+name = "ingestion-service"
+version = "0.1.0"
+description = "Document ingestion service for Open WebUI — Haystack v2 pipeline (extract → chunk → embed → store)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-multipart>=0.0.9",
+    "haystack-ai>=2.10.0",
+    "qdrant-haystack>=8.0.0",
+    "fastembed-haystack>=1.5.0",
+    "tika>=2.6.0",                  # TikaDocumentConverter optional dep
+    "pypdf>=4.0",                   # PyPDFToDocument optional dep
+    "qdrant-client>=1.12.0,<3.0",
+    "boto3>=1.35.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.9.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=7.0",
+    "moto[s3]>=5.0",
+    "respx>=0.21.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+exclude = ["build"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["B008"]  # Allow Depends() in function defaults (FastAPI pattern)
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
