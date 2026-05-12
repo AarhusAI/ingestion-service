@@ -8,6 +8,10 @@ os.environ["EMBEDDING_MODEL"] = "intfloat/multilingual-e5-large"
 os.environ["QDRANT_URI"] = "http://fake-qdrant:6333"
 os.environ["TIKA_URL"] = "http://fake-tika:9998"
 os.environ["KREUZBERG_URL"] = "http://fake-kreuzberg:8000"
+# Pin the default extraction engine for tests so the suite is independent of
+# whatever the live container is configured with (operators flipping
+# EXTRACTION_ENGINE=kreuzberg shouldn't break tests that assert on defaults).
+os.environ["EXTRACTION_ENGINE"] = "tika"
 os.environ["S3_ENDPOINT_URL"] = "http://fake-s3:9000"
 os.environ["S3_ACCESS_KEY_ID"] = "fake-key"
 os.environ["S3_SECRET_ACCESS_KEY"] = "fake-secret"

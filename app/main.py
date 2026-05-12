@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.pipelines.indexing import init_pipeline
+from app.pipelines.indexing import init_pipeline, is_pipeline_ready
 from app.routes.extract import router as extract_router
 from app.routes.ingest import router as ingest_router
 from app.services import qdrant_setup
@@ -79,13 +79,24 @@ async def health():
 
 @app.get("/health/ready")
 async def health_ready():
-    """Readiness probe — verifies Qdrant connectivity."""
-    if qdrant_setup.health_check():
-        return {"status": "ok"}
-    return JSONResponse(
-        status_code=503,
-        content={"status": "error", "detail": "qdrant unreachable"},
-    )
+    """Readiness probe — verifies Qdrant connectivity AND pipeline warm-up.
+
+    Returns 503 until ``init_pipeline()`` has finished (and the sparse
+    embedder has downloaded its model). This is what keeps Docker /
+    Kubernetes from routing traffic during the first cold-start while
+    fastembed pulls the ~80 MB BM42 model from HuggingFace.
+    """
+    if not is_pipeline_ready():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": "pipeline not warmed up yet"},
+        )
+    if not qdrant_setup.health_check():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": "qdrant unreachable"},
+        )
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

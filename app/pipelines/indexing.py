@@ -13,6 +13,7 @@ are not left behind.
 from __future__ import annotations
 
 import logging
+import time
 
 from haystack import Pipeline
 from haystack.components.writers import DocumentWriter
@@ -34,20 +35,44 @@ _document_store: QdrantDocumentStore | None = None
 
 
 def init_pipeline(settings: Settings | None = None) -> None:
-    """Build (or rebuild) the pipeline + document store. Called from lifespan."""
+    """Build (or rebuild) the pipeline + document store, then warm it up.
+
+    Called from FastAPI lifespan. The warm-up step walks every component
+    and calls each one's ``warm_up()`` if defined — Haystack's
+    ``FastembedSparseDocumentEmbedder`` downloads the BM42 model there.
+    Without this call, fastembed lazy-loads on the first ``.run()``, so
+    the first user-facing ingest pays a ~20-60 s cold-download cost.
+    Moving it here means startup takes longer but per-request latency
+    is predictable.
+    """
     global _pipeline, _document_store
     s = settings or global_settings
     _document_store = _build_document_store(s)
     _pipeline = _build_pipeline(s, _document_store)
+
+    started = time.monotonic()
+    _pipeline.warm_up()
+    warm_up_s = time.monotonic() - started
+
     log.info(
         "indexing pipeline ready (extraction=%s, embed_provider=%s, embed_model=%s, "
-        "sparse=%s, qdrant_index=%s)",
+        "sparse=%s, qdrant_index=%s, warm_up=%.2fs)",
         s.extraction_engine,
         s.embedding_provider,
         s.embedding_model,
         s.enable_sparse_embeddings,
         s.qdrant_index,
+        warm_up_s,
     )
+
+
+def is_pipeline_ready() -> bool:
+    """True iff ``init_pipeline()`` has finished and the pipeline is warm.
+
+    Used by the ``/health/ready`` probe so Kubernetes / Docker readiness
+    correctly waits for the model download before routing traffic.
+    """
+    return _pipeline is not None and _document_store is not None
 
 
 def _build_document_store(s: Settings) -> QdrantDocumentStore:
