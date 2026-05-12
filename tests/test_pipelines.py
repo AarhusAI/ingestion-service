@@ -97,12 +97,58 @@ def test_build_splitter_token_requires_model():
         build_splitter(s)
 
 
+def test_huggingface_tokenizer_splitter_run(monkeypatch):
+    """``run()`` slices each doc, assigns ``split_id``, and skips empties.
+
+    Covers the three branches in ``HuggingFaceTokenizerSplitter.run``:
+    whitespace-only document skip, empty-piece skip, and the
+    ``split_id`` numbering (which mirrors the enumerate index — a
+    skipped empty piece leaves a gap, by design).
+    """
+    from haystack import Document
+
+    from app.pipelines import splitter as splitter_mod
+
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m: object())
+
+    class _FakeSplitter:
+        @classmethod
+        def from_huggingface_tokenizer(cls, *_args, **_kwargs):
+            return cls()
+
+        def split_text(self, text):
+            # Three pieces; the empty middle exercises the skip branch.
+            return [f"{text}::a", "", f"{text}::b"]
+
+    monkeypatch.setattr(
+        "langchain_text_splitters.RecursiveCharacterTextSplitter",
+        _FakeSplitter,
+    )
+
+    sp = splitter_mod.HuggingFaceTokenizerSplitter(
+        tokenizer_model="x", chunk_size=10, chunk_overlap=2
+    )
+
+    docs = [
+        Document(content="hello", meta={"file_id": "f1"}),
+        Document(content="   ", meta={"file_id": "f2"}),  # whitespace → skipped
+        Document(content="", meta={"file_id": "f3"}),  # empty → skipped
+    ]
+    out = sp.run(documents=docs)["documents"]
+
+    assert [d.content for d in out] == ["hello::a", "hello::b"]
+    assert out[0].meta == {"file_id": "f1", "split_id": 0}
+    # split_id 1 was the skipped empty piece — gap is intentional (the index
+    # comes straight from enumerate, so downstream debugging can see the skip).
+    assert out[1].meta == {"file_id": "f1", "split_id": 2}
+
+
 def test_build_splitter_token_uses_hf_component(monkeypatch):
     # Avoid the real tokenizer download; the component only stores the
     # langchain splitter, so mock both layers.
     from app.pipelines import splitter as splitter_mod
 
-    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda m: object())
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m: object())
 
     class _FakeSplitter:
         @classmethod

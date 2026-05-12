@@ -9,7 +9,7 @@ Document ingestion service for Open WebUI. A standalone FastAPI microservice tha
 The pipeline is configurable end-to-end:
 
 - **Extraction**: `EXTRACTION_ENGINE` selects `tika` (default), `pypdf`, `docling`, or `unstructured`. Tika and pypdf ship in the day-one image; docling/unstructured require optional deps. The factory raises a clear `ImportError` at startup if you select an engine whose dep is missing.
-- **Chunking**: `DocumentSplitter` driven by `CHUNK_SIZE`/`CHUNK_OVERLAP`/`CHUNK_SPLIT_BY`.
+- **Chunking**: factory in `app/pipelines/splitter.py` picks between Haystack's `DocumentSplitter` (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units) and the custom `HuggingFaceTokenizerSplitter` (`CHUNK_SPLIT_BY=token`, the default — wraps `langchain_text_splitters.RecursiveCharacterTextSplitter.from_huggingface_tokenizer` so chunk size is measured in the embedding model's actual tokens). Token mode falls back to `EMBEDDING_MODEL` for the tokenizer unless `TOKENIZER_MODEL` is set; `transformers` + `langchain_text_splitters` are lazy-imported so non-token users don't pay the cost. The tokenizer is `@lru_cache`d (first load ~1–3s, then free).
 - **Dense embedding**: `EMBEDDING_PROVIDER` picks `openai-compat` (the current `embed.itkdev.dk` path), `fastembed` (in-process), or `tei` (also OpenAI-compatible at the wire level). Required.
 - **Sparse embedding**: `ENABLE_SPARSE_EMBEDDINGS=true` adds a `FastembedSparseDocumentEmbedder` stage so each Qdrant point holds both a dense and a sparse named vector. Optional; default off.
 
@@ -74,7 +74,7 @@ Tests use `pytest-asyncio` with `asyncio_mode = "auto"`. `tests/conftest.py` set
 
 All config via environment variables, loaded by pydantic-settings in `app/config.py`. See `.env.example` and `README.md` for the full list. The settings that matter beyond their docstrings — because they are **contracts with other systems**:
 
-- `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY`.
+- `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY`. In the parent stack both are forked from a single deployer-facing `INGESTION_API_KEY` (see parent `docker-compose.yml` — the two consumers read `${INGESTION_API_KEY}` from the same source so they can never drift).
 - `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PREFIX_DOC` — must match what the retrieval agent uses at query time. Indexing-time prefix is `EMBEDDING_PREFIX_DOC` (e5 needs `passage: `, bge-m3 takes none, nomic uses `search_document: `). The retrieval agent applies `EMBEDDING_PREFIX_QUERY` on the query side; the two sides must use the same model + prefix or vector search returns garbage.
 - `QDRANT_INDEX` is the physical Qdrant collection. Defaults to `ingestion_files` (distinct from Open WebUI's legacy multitenancy collections; the Phase 3 retrieval-agent rewrite will read from this collection exclusively).
 - `S3_*` env vars match boto3 conventions. The service treats whatever endpoint it's pointed at (MinIO in dev, real AWS S3 in prod, etc.) as generic S3-compatible storage.

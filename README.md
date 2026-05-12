@@ -24,12 +24,21 @@ file upload.
 
 ```shell
 cp .env.example .env
-# Edit .env — at minimum set API_KEY, EMBEDDING_API_BASE_URL, EMBEDDING_API_KEY
+# Edit .env — at minimum set API_KEY and EMBEDDING_API_KEY. The other defaults
+# in .env.example (EMBEDDING_API_BASE_URL=https://embed.itkdev.dk/v1, MinIO,
+# Qdrant, Tika URLs) are the working Aarhus dev values; only override when
+# pointing at something else.
 
 # Generate a secure API key:
 python -c "import secrets; print(secrets.token_urlsafe(32))"
-# Set the output as API_KEY in .env and as INGESTION_API_KEY / EXTERNAL_INGESTION_API_KEY
-# in the Open WebUI deployment
+
+# Where the same secret has to land:
+#   - standalone:    set as API_KEY in this service's .env.
+#   - parent stack:  set as INGESTION_API_KEY in the parent .env. The parent
+#                    docker-compose forks it into two places — this service's
+#                    API_KEY and the openwebui container's
+#                    EXTERNAL_INGESTION_API_KEY. You do not set the latter two
+#                    by hand.
 
 task setup          # starts container + installs dev deps (requires Traefik 'frontend' network)
 task logs           # tail ingestion container logs
@@ -49,10 +58,11 @@ task test:coverage  # run tests with coverage report
 task ci             # lint + test
 ```
 
-Run a single test:
+Run a single test (or one test in a file):
 
 ```shell
 docker compose exec ingestion pytest tests/test_ingest_endpoint.py -v
+docker compose exec ingestion pytest tests/test_ingest_endpoint.py::test_json_mode_happy_path -v
 ```
 
 ### Production Image
@@ -156,6 +166,14 @@ because they are **contracts with other services**:
 - `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
   the retrieval agent can use Qdrant's native hybrid query (RRF fusion) instead
   of the legacy client-side BM25.
+- `CHUNK_SPLIT_BY` selects the chunking strategy. The default `token` mode
+  measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
+  HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
+  so chunks respect the model's context window — important for e5-large's
+  512-token cap once the `passage: ` prefix is prepended. `word`, `sentence`,
+  and `passage` delegate to Haystack's built-in `DocumentSplitter` and count
+  in those units instead. Token mode uses `TOKENIZER_MODEL` if set, otherwise
+  falls back to `EMBEDDING_MODEL`.
 
 ## Supported Embedding Models
 

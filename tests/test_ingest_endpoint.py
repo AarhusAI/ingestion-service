@@ -3,6 +3,8 @@
 from io import BytesIO
 from unittest.mock import patch
 
+import pytest
+
 
 async def test_json_mode_happy_path(client, api_headers, tmp_path):
     """JSON body fetches via S3, runs pipeline, returns chunks count."""
@@ -65,7 +67,7 @@ async def test_json_mode_missing_s3_reference(client, api_headers):
     assert detail["code"] == "INVALID_REQUEST"
 
 
-async def test_multipart_mode_happy_path(client, api_headers, tmp_path):
+async def test_multipart_mode_happy_path(client, api_headers):
     """Multipart body streams to a tempfile and runs the pipeline."""
     files = {
         "file": ("report.pdf", BytesIO(b"%PDF-fake"), "application/pdf"),
@@ -158,3 +160,51 @@ async def test_pipeline_failure_maps_to_classified_error(client, api_headers, tm
     detail = response.json()["detail"]
     assert detail["code"] == "EXTRACTION_FAILED"
     assert detail["status"] is False
+
+
+# ---------------------------------------------------------------------------
+# Helper unit tests — exercise the private helpers directly so we don't have
+# to round-trip a full request to cover one-line branches.
+# ---------------------------------------------------------------------------
+
+
+def test_form_bool_passes_through_bool():
+    """`_form_bool` accepts a real bool without re-parsing it as a string."""
+    from app.routes.ingest import _form_bool
+
+    assert _form_bool(True) is True
+    assert _form_bool(False) is False
+
+
+class _PyPDFError(Exception):
+    """Stand-in for the pypdf converter exception (name-match branch)."""
+
+
+class _OpenAIError(Exception):
+    """Stand-in for an embedder exception with 'OpenAI' in the class name."""
+
+
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        # Extraction: matched by message keyword OR exception class name.
+        (RuntimeError("Tika converter timeout"), "EXTRACTION_FAILED"),
+        (RuntimeError("could not extract pages"), "EXTRACTION_FAILED"),
+        (_PyPDFError("malformed page tree"), "EXTRACTION_FAILED"),
+        # Qdrant: 'qdrant' or 'vector store' (or 'vector' + 'write').
+        (RuntimeError("qdrant write failed"), "QDRANT_WRITE_FAILED"),
+        (RuntimeError("vector store unreachable"), "QDRANT_WRITE_FAILED"),
+        # Sparse stage must be checked before the generic embed branch.
+        (RuntimeError("sparse embed call failed"), "SPARSE_EMBEDDING_FAILED"),
+        # Generic embed by message OR by OpenAI-named exception class.
+        (RuntimeError("embed endpoint returned 500"), "EMBEDDING_FAILED"),
+        (_OpenAIError("opaque server error"), "EMBEDDING_FAILED"),
+        # Fallback.
+        (RuntimeError("nothing recognizable here"), "PIPELINE_FAILED"),
+    ],
+)
+def test_classify_pipeline_error(exc, expected):
+    """Heuristic mapping from a raised exception → `IngestError.code`."""
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert _classify_pipeline_error(exc) == expected
