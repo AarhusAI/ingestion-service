@@ -1,10 +1,11 @@
 """Document converter factory.
 
-Selects a Haystack converter based on ``EXTRACTION_ENGINE``. ``tika`` and
-``pypdf`` ship in the day-one image. ``docling`` and ``unstructured`` are
-wired but their (heavy) deps are deliberately not in pyproject.toml — they
-will raise a clear ``ImportError`` at startup if selected without the dep
-installed.
+Selects a Haystack converter based on ``EXTRACTION_ENGINE``. ``tika``,
+``pypdf`` and ``kreuzberg`` ship in the day-one image — ``tika`` and
+``kreuzberg`` both run as external HTTP sidecars (the others are
+in-process). ``docling`` and ``unstructured`` are wired but their (heavy)
+deps are deliberately not in pyproject.toml — they will raise a clear
+``ImportError`` at startup if selected without the dep installed.
 """
 
 from app.config import Settings
@@ -53,6 +54,15 @@ def build_converter(settings: Settings, engine_override: str | None = None):
             ) from exc
         return UnstructuredFileConverter()
 
+    if engine == "kreuzberg":
+        # Custom HTTP wrapper around the goldziher/kreuzberg sidecar. Lives in
+        # our own code (no third-party haystack integration) so the dep is
+        # just httpx, which is already required.
+        from app.pipelines.kreuzberg_converter import KreuzbergRemoteConverter
+
+        return KreuzbergRemoteConverter(kreuzberg_url=settings.kreuzberg_url)
+
     raise ValueError(
-        f"Unknown EXTRACTION_ENGINE={engine!r} (supported: tika | pypdf | docling | unstructured)"
+        f"Unknown EXTRACTION_ENGINE={engine!r} "
+        "(supported: tika | pypdf | docling | unstructured | kreuzberg)"
     )

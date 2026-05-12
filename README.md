@@ -16,7 +16,9 @@ file upload.
 - [Task](https://taskfile.dev/) (Go Task runner)
 - A Qdrant instance (shared with the retrieval agent)
 - An OpenAI-compatible embedding endpoint (e.g. the `embed.itkdev.dk` proxy)
-- A Tika server reachable on the same network (when `EXTRACTION_ENGINE=tika`)
+- An extraction sidecar reachable on the same network: a Tika server (when
+  `EXTRACTION_ENGINE=tika`, the default) or a Kreuzberg API server (when
+  `EXTRACTION_ENGINE=kreuzberg`). Both ship as containers in the parent stack.
 
 ## Quick Start
 
@@ -162,7 +164,7 @@ Multipart-only. Same Bearer-token auth as `/api/v1/ingest`.
 Fields:
 
 - `file` (required) — the document to extract.
-- `engine` (optional) — one of `tika | pypdf | docling | unstructured`.
+- `engine` (optional) — one of `tika | pypdf | docling | unstructured | kreuzberg`.
   Overrides `EXTRACTION_ENGINE` for this single request. When omitted, the
   configured default is used.
 
@@ -245,7 +247,8 @@ because they are **contracts with other services**:
 
 | `EXTRACTION_ENGINE` | Status | Notes |
 |---|---|---|
-| `tika` | day-one | Reuses the existing `tika` container in the parent stack |
-| `pypdf` | day-one | Lightweight, PDF-only |
+| `tika` | day-one | HTTP sidecar — reuses the existing `tika` container in the parent stack |
+| `pypdf` | day-one | In-process, PDF-only, lightweight |
+| `kreuzberg` | day-one | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |

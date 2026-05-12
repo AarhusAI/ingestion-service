@@ -15,21 +15,26 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # ----- Extraction -----
-    # tika | pypdf | docling | unstructured
+    # tika | pypdf | docling | unstructured | kreuzberg
+    # tika/kreuzberg run as external HTTP sidecars; the rest are in-process.
     # docling/unstructured require optional deps not bundled by default.
     extraction_engine: str = "tika"
     tika_url: str = "http://tika:9998"
+    kreuzberg_url: str = "http://kreuzberg:8000"
 
     # ----- Chunking -----
     # token mode measures chunk size with the embedding model's HuggingFace
     # tokenizer (xlm-r for e5, sentencepiece for bge-m3, etc.) so chunks
-    # respect the model's context window. word/sentence/passage delegate
-    # to Haystack's built-in DocumentSplitter and count by approximate units.
+    # respect the model's context window. markdown mode splits on Markdown
+    # headers first and token-packs each section, preserving a `meta.headers`
+    # breadcrumb — useful when the converter emits Markdown (Docling natively).
+    # word/sentence/passage delegate to Haystack's built-in DocumentSplitter
+    # and count by approximate units.
     chunk_size: int = 400
     chunk_overlap: int = 80
-    chunk_split_by: str = "token"  # token | word | sentence | passage
-    # Optional override; empty falls back to embedding_model. Only used in
-    # token mode.
+    chunk_split_by: str = "token"  # token | markdown | word | sentence | passage
+    # Optional override; empty falls back to embedding_model. Used in token
+    # and markdown modes.
     tokenizer_model: str = ""
 
     # ----- Dense embedder (required) -----

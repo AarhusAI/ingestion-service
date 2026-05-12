@@ -8,8 +8,8 @@ Document ingestion service for Open WebUI. A standalone FastAPI microservice tha
 
 The pipeline is configurable end-to-end:
 
-- **Extraction**: `EXTRACTION_ENGINE` selects `tika` (default), `pypdf`, `docling`, or `unstructured`. Tika and pypdf ship in the day-one image; docling/unstructured require optional deps. The factory raises a clear `ImportError` at startup if you select an engine whose dep is missing.
-- **Chunking**: factory in `app/pipelines/splitter.py` picks between Haystack's `DocumentSplitter` (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units) and the custom `HuggingFaceTokenizerSplitter` (`CHUNK_SPLIT_BY=token`, the default — wraps `langchain_text_splitters.RecursiveCharacterTextSplitter.from_huggingface_tokenizer` so chunk size is measured in the embedding model's actual tokens). Token mode falls back to `EMBEDDING_MODEL` for the tokenizer unless `TOKENIZER_MODEL` is set; `transformers` + `langchain_text_splitters` are lazy-imported so non-token users don't pay the cost. The tokenizer is `@lru_cache`d (first load ~1–3s, then free).
+- **Extraction**: `EXTRACTION_ENGINE` selects `tika` (default), `pypdf`, `kreuzberg`, `docling`, or `unstructured`. `tika` and `kreuzberg` run as external HTTP sidecars (containers in the parent stack — `tika` at `TIKA_URL`, `goldziher/kreuzberg` at `KREUZBERG_URL`). `pypdf` is in-process. `tika`, `pypdf` and `kreuzberg` ship in the day-one image; `docling`/`unstructured` require optional deps. The factory raises a clear `ImportError` at startup if you select an engine whose dep is missing. The `kreuzberg` branch wraps the sidecar via a custom `KreuzbergRemoteConverter` Haystack component in `app/pipelines/kreuzberg_converter.py` — no third-party Haystack integration is used, so the dependency surface stays at `httpx` (already required).
+- **Chunking**: factory in `app/pipelines/splitter.py` picks between Haystack's `DocumentSplitter` (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units), the custom `HuggingFaceTokenizerSplitter` (`CHUNK_SPLIT_BY=token`, the default — wraps `langchain_text_splitters.RecursiveCharacterTextSplitter.from_huggingface_tokenizer` so chunk size is measured in the embedding model's actual tokens), and the structure-aware `MarkdownChunker` (`CHUNK_SPLIT_BY=markdown` — two-stage: split on `#`/`##`/`###` headings via `MarkdownHeaderTextSplitter`, then token-pack each section that exceeds `CHUNK_SIZE`. Preserves the heading hierarchy on each chunk as `meta.headers`). Token + markdown modes fall back to `EMBEDDING_MODEL` for the tokenizer unless `TOKENIZER_MODEL` is set; `transformers` + `langchain_text_splitters` are lazy-imported so word/sentence/passage users don't pay the cost. The tokenizer is `@lru_cache`d (first load ~1–3s, then free) and shared between the two HF-aware splitters.
 - **Dense embedding**: `EMBEDDING_PROVIDER` picks `openai-compat` (the current `embed.itkdev.dk` path), `fastembed` (in-process), or `tei` (also OpenAI-compatible at the wire level). Required.
 - **Sparse embedding**: `ENABLE_SPARSE_EMBEDDINGS=true` adds a `FastembedSparseDocumentEmbedder` stage so each Qdrant point holds both a dense and a sparse named vector. Optional; default off.
 
@@ -60,6 +60,8 @@ Each Qdrant point's payload carries:
         "source":          "<filename>",
         "user_id":         "<user UUID>",
         "page":            <int, when the converter exposes it>,
+        "headers":         <list[str], when CHUNK_SPLIT_BY=markdown — outermost-first breadcrumb of section headings, [] for chunks outside any heading>,
+        "split_id":        <int, monotonic chunk index within the file>,
     }
 }
 ```
@@ -86,7 +88,7 @@ All config via environment variables, loaded by pydantic-settings in `app/config
 
 ## Failure-mode notes
 
-- **Tika down** → `EXTRACTION_FAILED`. Open WebUI's file row goes to `failed`; the user sees the error and can retry once Tika is back.
+- **Tika / Kreuzberg sidecar down** → `EXTRACTION_FAILED`. Open WebUI's file row goes to `failed`; the user sees the error and can retry once the sidecar is back.
 - **Embedding endpoint down** → `EMBEDDING_FAILED` (or `SPARSE_EMBEDDING_FAILED` for the sparse stage). The all-or-nothing teardown ensures no partial points reach Qdrant.
 - **Qdrant write fails** → `QDRANT_WRITE_FAILED`. Tear-down still runs even if the original error came from a partial write — `_delete_existing_by_file_id()` swallows "collection not found" errors so the failure path is robust on cold starts.
 - **S3 fetch 404 / auth** → `S3_FETCH_FAILED`. The route layer catches this before the pipeline runs.
