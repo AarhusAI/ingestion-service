@@ -149,6 +149,54 @@ When `overwrite=true` (default), all existing Qdrant points with matching
 delete-and-rewrite, no duplicates. On any pipeline failure the same delete runs
 as teardown, so partial writes never leak into Qdrant.
 
+### `POST /api/v1/extract`
+
+Developer-facing extraction probe: runs the configured Haystack converter
+against an uploaded file and returns the raw extracted documents. No chunking,
+no embedding, no Qdrant writes. Useful for sanity-checking how a given engine
+sees a document before committing to a full ingest, and for comparing engines
+side-by-side without restarting the container.
+
+Multipart-only. Same Bearer-token auth as `/api/v1/ingest`.
+
+Fields:
+
+- `file` (required) — the document to extract.
+- `engine` (optional) — one of `tika | pypdf | docling | unstructured`.
+  Overrides `EXTRACTION_ENGINE` for this single request. When omitted, the
+  configured default is used.
+
+#### Example
+
+```shell
+curl -X POST \
+  -H "Authorization: Bearer $API_KEY" \
+  -F file=@sample.pdf \
+  -F engine=pypdf \
+  http://localhost:8000/api/v1/extract
+```
+
+#### Response
+
+```json
+{
+  "status": true,
+  "engine": "pypdf",
+  "documents": [
+    {"content": "# Heading\n...", "meta": {"page": 1}},
+    {"content": "...",            "meta": {"page": 2}}
+  ]
+}
+```
+
+Errors use the same `IngestError` shape as `/api/v1/ingest`. Codes returned:
+`INVALID_REQUEST` (unknown engine, missing file, missing optional dependency
+for `docling`/`unstructured`) and `EXTRACTION_FAILED` (converter raised at
+runtime). Note that `engine=unstructured` is wired in but its converter uses
+a `paths=` input socket Haystack's pipeline doesn't currently route to — the
+ingest pipeline has the same limitation; this endpoint will surface it as
+`EXTRACTION_FAILED`.
+
 ## Configuration
 
 All config is via environment variables loaded by pydantic-settings. See

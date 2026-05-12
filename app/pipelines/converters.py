@@ -10,8 +10,13 @@ installed.
 from app.config import Settings
 
 
-def build_converter(settings: Settings):
-    engine = settings.extraction_engine.lower()
+def build_converter(settings: Settings, engine_override: str | None = None):
+    """Build the configured converter, or one identified by ``engine_override``.
+
+    ``engine_override`` is used by ``POST /api/v1/extract`` so a caller can
+    compare engines on the same file without restarting the container.
+    """
+    engine = (engine_override or settings.extraction_engine).lower()
 
     if engine == "tika":
         from haystack.components.converters import TikaDocumentConverter
@@ -49,6 +54,5 @@ def build_converter(settings: Settings):
         return UnstructuredFileConverter()
 
     raise ValueError(
-        f"Unknown EXTRACTION_ENGINE={settings.extraction_engine!r} "
-        "(supported: tika | pypdf | docling | unstructured)"
+        f"Unknown EXTRACTION_ENGINE={engine!r} (supported: tika | pypdf | docling | unstructured)"
     )

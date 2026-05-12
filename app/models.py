@@ -46,3 +46,22 @@ class IngestError(BaseModel):
     status: bool = False
     error: str
     code: ErrorCode
+
+
+class ExtractedDocument(BaseModel):
+    """One Haystack ``Document`` flattened for JSON response.
+
+    ``meta`` is whatever the converter attached (e.g. ``page`` for pypdf,
+    file-level metadata for tika); no schema is imposed.
+    """
+
+    content: str
+    meta: dict = Field(default_factory=dict)
+
+
+class ExtractResponse(BaseModel):
+    """Response body of ``POST /api/v1/extract`` — extraction-only probe."""
+
+    status: bool = True
+    engine: str
+    documents: list[ExtractedDocument]

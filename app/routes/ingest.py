@@ -96,17 +96,15 @@ def _fetch_from_s3(bucket: str, key: str) -> str:
         ) from exc
 
 
-async def _read_multipart(form) -> tuple[str, dict[str, Any]]:
-    upload = form.get("file")
-    if upload is None:
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(
-                error="multipart request missing 'file' field",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
+async def stream_upload_to_tempfile(upload) -> str:
+    """Stream a Starlette ``UploadFile`` to a NamedTemporaryFile.
 
+    Preserves the original file extension (some converters dispatch on it).
+    The caller owns the returned path and must ``os.unlink`` it. Assumes
+    ``upload`` is non-None — presence checks live in the route handlers so
+    this helper stays HTTP-agnostic and reusable across routes (currently
+    ``/api/v1/ingest`` and ``/api/v1/extract``).
+    """
     suffix = ""
     if upload.filename and "." in upload.filename:
         suffix = "." + upload.filename.rsplit(".", 1)[-1]
@@ -121,6 +119,20 @@ async def _read_multipart(form) -> tuple[str, dict[str, Any]]:
         fh.flush()
     finally:
         fh.close()
+    return fh.name
+
+
+async def _read_multipart(form) -> tuple[str, dict[str, Any]]:
+    upload = form.get("file")
+    if upload is None:
+        raise HTTPException(
+            status_code=400,
+            detail=IngestError(
+                error="multipart request missing 'file' field",
+                code="INVALID_REQUEST",
+            ).model_dump(),
+        )
+    path = await stream_upload_to_tempfile(upload)
 
     meta = {
         "file_id": _required_form(form, "file_id"),
@@ -132,7 +144,7 @@ async def _read_multipart(form) -> tuple[str, dict[str, Any]]:
         "name": _required_form(form, "filename"),
         "source": _required_form(form, "filename"),
     }
-    return fh.name, meta
+    return path, meta
 
 
 def _meta_from_request(body: IngestRequestJSON) -> dict[str, Any]:

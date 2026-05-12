@@ -41,6 +41,19 @@ def test_build_converter_unknown():
         build_converter(s)
 
 
+def test_build_converter_override_takes_precedence():
+    """``engine_override`` (used by /api/v1/extract) wins over the configured engine."""
+    s = _settings(extraction_engine="tika")
+    c = build_converter(s, engine_override="pypdf")
+    assert type(c).__name__ == "PyPDFToDocument"
+
+
+def test_build_converter_override_validates_unknown():
+    s = _settings(extraction_engine="tika")
+    with pytest.raises(ValueError, match="Unknown EXTRACTION_ENGINE='banana'"):
+        build_converter(s, engine_override="banana")
+
+
 # -------------------- Dense embedders --------------------
 
 

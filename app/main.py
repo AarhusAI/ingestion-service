@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.pipelines.indexing import init_pipeline
+from app.routes.extract import router as extract_router
 from app.routes.ingest import router as ingest_router
 from app.services import qdrant_setup
 
@@ -68,6 +69,7 @@ app = FastAPI(
 )
 
 app.include_router(ingest_router)
+app.include_router(extract_router)
 
 
 @app.get("/health")
