@@ -1,6 +1,6 @@
 # Ingestion Service
 
-Document ingestion microservice for [Open WebUI](https://github.com/open-webui/open-webui).
+Document ingestion microservice for [AarhusAI](https://github.com/AarhusAI).
 A standalone FastAPI service that runs a [Haystack v2](https://haystack.deepset.ai/)
 indexing pipeline (extract → chunk → embed → store) and writes Haystack-native documents
 to Qdrant. The pluggable extraction engine, dense embedder, and optional sparse embedder

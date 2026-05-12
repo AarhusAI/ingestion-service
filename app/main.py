@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Ingestion Service",
-    description="Document ingestion service for Open WebUI (Haystack v2)",
+    description="Document ingestion service for AarhusAI (Haystack v2)",
     version="0.1.0",
     lifespan=lifespan,
 )

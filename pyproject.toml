@@ -1,7 +1,7 @@
 [project]
 name = "ingestion-service"
 version = "0.1.0"
-description = "Document ingestion service for Open WebUI — Haystack v2 pipeline (extract → chunk → embed → store)"
+description = "Document ingestion service for AarhusAi — Haystack v2 pipeline (extract → chunk → embed → store)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
