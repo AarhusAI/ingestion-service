@@ -160,3 +160,306 @@ def test_url_trailing_slash_normalised(tmp_path):
     """Constructor strips a trailing slash so the joined URL is always single-slashed."""
     c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000/")
     assert c._url == "http://fake-kreuzberg:8000/extract"
+
+
+# ---------------------------------------------------------------------------
+# Tables rendering — Kreuzberg returns tables as a separate structured array.
+# We rescue them from the body-content flattening by appending as Markdown.
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_content_appends_tables_section(tmp_source):
+    """Body + two tables → body, blank line, ``## Tables`` heading, each
+    table under its own ``### Table N (page X)`` heading."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "Body paragraph here.",
+                "tables": [
+                    {
+                        "markdown": "| Region | Q1 |\n| --- | --- |\n| Nordic | 100 |\n",
+                        "page_number": 1,
+                    },
+                    {
+                        "markdown": "| Category | Amount |\n| --- | --- |\n| Salary | 500 |\n",
+                        "page_number": 2,
+                    },
+                ],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    content = out[0].content
+    assert content.startswith("Body paragraph here.\n\n## Tables\n\n")
+    assert "### Table 1 (page 1)\n\n| Region | Q1 |" in content
+    assert "### Table 2 (page 2)\n\n| Category | Amount |" in content
+
+
+@respx.mock
+def test_content_unchanged_when_tables_empty(tmp_source):
+    """``"tables": []`` → content is just the body, no ``## Tables`` heading.
+    Regression guard for the bulk of documents without tables."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[{"content": "plain body, no tables", "tables": []}],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert out[0].content == "plain body, no tables"
+    assert "## Tables" not in out[0].content
+
+
+@respx.mock
+def test_content_handles_missing_tables_key(tmp_source):
+    """No ``tables`` key at all (older / variant builds) → safe fallback."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(200, json=[{"content": "just body"}])
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert out[0].content == "just body"
+
+
+@respx.mock
+def test_content_skips_table_without_markdown(tmp_source):
+    """A table missing the ``markdown`` field is silently dropped (we don't
+    fall back to rendering from ``cells`` ourselves). Numbering stays
+    monotonic across **successful** renders — the surviving table is
+    numbered 1, not 2."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "tables": [
+                    {"cells": [["A", "B"]], "page_number": 1},  # no markdown → skip
+                    {"markdown": "| X | Y |\n| --- | --- |\n", "page_number": 5},
+                ],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    content = out[0].content
+    assert "### Table 1 (page 5)" in content
+    # No "Table 2" — only one table was successfully rendered.
+    assert "### Table 2" not in content
+
+
+@respx.mock
+def test_content_table_without_page_number(tmp_source):
+    """Missing ``page_number`` → heading is ``### Table N`` with no page suffix."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "tables": [{"markdown": "| X | Y |\n| --- | --- |\n"}],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert "### Table 1\n\n| X | Y |" in out[0].content
+    assert "(page" not in out[0].content
+
+
+@respx.mock
+def test_content_no_tables_heading_when_all_invalid(tmp_source):
+    """If every table fails to render, do not emit a bare ``## Tables`` heading."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "tables": [
+                    {"cells": [["A"]]},  # no markdown
+                    "not-even-a-dict",
+                    {"markdown": ""},  # empty markdown
+                ],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert out[0].content == "body"
+    assert "## Tables" not in out[0].content
+
+
+# ---------------------------------------------------------------------------
+# Document-level metadata enrichment — title / subject / authors / created_at
+# from ``result.metadata`` plus ``languages`` from top-level
+# ``detected_languages``. Curated whitelist; everything else stays internal
+# to Kreuzberg.
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_meta_includes_doc_metadata_whitelist(tmp_source):
+    """Title / subject / authors / created_at / languages all land in Document.meta
+    when the response carries them."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "metadata": {
+                    "title": "Privacy by Design",
+                    "subject": "Implementation Guidance",
+                    "authors": ["Fred Carter"],
+                    "created_at": "2010-11-02T15:06:47Z",
+                    # Below this line: things we deliberately drop.
+                    "created_by": "Writer",
+                    "producer": "OpenOffice.org",
+                    "page_count": 5,
+                    "quality_score": 1.0,
+                    "is_encrypted": False,
+                    "width": 612,
+                    "height": 792,
+                },
+                "detected_languages": ["en", "da"],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source], meta={"file_id": "f-1"})["documents"]
+
+    m = out[0].meta
+    assert m["title"] == "Privacy by Design"
+    assert m["subject"] == "Implementation Guidance"
+    assert m["authors"] == ["Fred Carter"]
+    assert m["created_at"] == "2010-11-02T15:06:47Z"
+    assert m["languages"] == ["en", "da"]
+    # File-level request meta still authoritative.
+    assert m["file_id"] == "f-1"
+    # Blacklisted fields never leak into payload — they'd bloat Qdrant for nothing.
+    for forbidden in (
+        "created_by",
+        "producer",
+        "page_count",
+        "quality_score",
+        "is_encrypted",
+        "width",
+        "height",
+    ):
+        assert forbidden not in m
+
+
+@respx.mock
+def test_meta_omits_missing_or_empty_doc_metadata(tmp_source):
+    """No metadata at all → only request meta. Empty/null values in metadata are
+    dropped silently (no ``"subject": ""`` noise)."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "metadata": {
+                    "title": "",  # empty string → dropped
+                    "subject": None,  # null → dropped
+                    "authors": [],  # empty list → dropped
+                },
+                "detected_languages": None,  # null → no `languages` key
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source], meta={"file_id": "f-2"})["documents"]
+
+    m = out[0].meta
+    for absent in ("title", "subject", "authors", "created_at", "languages"):
+        assert absent not in m, f"{absent} should not be in meta"
+    # Request meta survives untouched.
+    assert m == {"file_id": "f-2"}
+
+
+@respx.mock
+def test_meta_request_meta_wins_on_collision(tmp_source):
+    """If the Kreuzberg metadata happens to use a key the request meta also
+    uses (e.g. ``title``), the request value wins — the route layer is the
+    contract authority."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "metadata": {"title": "Kreuzberg-detected Title"},
+                "detected_languages": ["da"],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(
+        sources=[tmp_source],
+        meta={"file_id": "f-3", "title": "Request-Override Title"},
+    )["documents"]
+
+    assert out[0].meta["title"] == "Request-Override Title"
+    # Non-colliding doc-meta still passes through.
+    assert out[0].meta["languages"] == ["da"]
+
+
+@respx.mock
+def test_meta_handles_missing_metadata_key(tmp_source):
+    """Response with no ``metadata`` key at all (older / variant builds) doesn't crash."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[{"content": "body", "detected_languages": ["en"]}],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    # `languages` still picked up from top level; no crash on missing `metadata`.
+    assert out[0].meta == {"languages": ["en"]}
+
+
+@respx.mock
+def test_meta_languages_empty_list_dropped(tmp_source):
+    """``detected_languages: []`` is treated as "nothing detected" and dropped —
+    we never emit ``"languages": []``."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[{"content": "body", "metadata": {}, "detected_languages": []}],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert "languages" not in out[0].meta
+
+
+@respx.mock
+def test_content_tables_only_no_body(tmp_source):
+    """If body is empty but tables exist, the rendered section stands alone —
+    no leading blank line, no stray whitespace."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "",
+                "tables": [{"markdown": "| X | Y |\n", "page_number": 1}],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert out[0].content.startswith("## Tables\n\n### Table 1 (page 1)")

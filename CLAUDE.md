@@ -62,6 +62,13 @@ Each Qdrant point's payload carries:
         "page":            <int, when the converter exposes it>,
         "headers":         <list[str], when CHUNK_SPLIT_BY=markdown — outermost-first breadcrumb of section headings, [] for chunks outside any heading>,
         "split_id":        <int, monotonic chunk index within the file>,
+        # Optional document-level metadata (currently populated by the kreuzberg engine).
+        # Request meta wins on collision; missing/empty values are omitted entirely.
+        "title":           <str, document title from extractor>,
+        "subject":         <str, PDF "subject" field>,
+        "authors":         <list[str], from PDF author metadata>,
+        "created_at":      <str, ISO 8601 timestamp from document properties>,
+        "languages":       <list[str], ISO 639-1 codes from auto-detection; indexed in Qdrant as a KEYWORD payload index so future filter consumers can MatchAny>,
     }
 }
 ```

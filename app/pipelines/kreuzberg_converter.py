@@ -74,7 +74,7 @@ class KreuzbergRemoteConverter:
         docs: list[Document] = []
         for i, source in enumerate(sources):
             path = Path(source)
-            doc_meta = _meta_for(meta, i)
+            request_meta = _meta_for(meta, i)
             # Kreuzberg dispatches on the multipart part's Content-Type rather
             # than sniffing the bytes. Sending ``application/octet-stream`` for
             # everything trips ``UnsupportedFormatError`` server-side, so guess
@@ -95,8 +95,13 @@ class KreuzbergRemoteConverter:
                 # and maps to EXTRACTION_FAILED.
                 raise RuntimeError(f"kreuzberg extract failed for {path.name}: {exc}") from exc
 
-            content = _content_from_payload(resp.json())
-            docs.append(Document(content=content, meta=doc_meta))
+            payload = resp.json()
+            content = _content_from_payload(payload)
+            doc_meta = _doc_meta_from_payload(payload)
+            # Request meta is the contract with the route layer (file_id /
+            # collection_name / user_id …) and must win on any collision.
+            merged_meta = {**doc_meta, **request_meta}
+            docs.append(Document(content=content, meta=merged_meta))
         return {"documents": docs}
 
 
@@ -111,26 +116,123 @@ def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:
 
 
 def _content_from_payload(payload: object) -> str:
-    """Extract the text from a Kreuzberg ``/extract`` response.
+    """Build the chunk-source text from a Kreuzberg ``/extract`` response.
 
     The 4.0.x API returns a JSON **array** — one ``ExtractionResult`` per
-    uploaded file, each with the text at the top-level ``content`` key. We
-    upload one source per request so we take the first element. Also
-    accepts a bare object (defensive against older builds / shape drift)
-    and an unexpected payload (empty string → downstream all-or-nothing
-    teardown handles the failure).
+    uploaded file. We upload one source per request, so we take the first
+    element. From it we pull two fields:
+
+    - ``content`` — the body text. In tabular PDFs, Kreuzberg flattens
+      tables into this string without whitespace (``"Sales100120135"`` etc.),
+      so the body alone is lossy for any document with tables.
+    - ``tables`` — a separate array of structured tables, each with a
+      pre-rendered ``markdown`` field and a ``page_number``. We append
+      these as a ``## Tables`` Markdown section so they survive
+      downstream chunking + embedding. With ``CHUNK_SPLIT_BY=markdown``
+      each table lands in its own ``### Table N (page X)`` section.
+
+    Defensive against shape drift: accepts a bare object as well as the
+    canonical array, and returns the empty string if nothing usable is
+    in the payload (downstream all-or-nothing teardown handles failure).
+    """
+    result = _first_result(payload)
+    if result is None:
+        return ""
+    body = result.get("content") if isinstance(result.get("content"), str) else ""
+    tables = result.get("tables") if isinstance(result.get("tables"), list) else []
+    table_section = _render_tables_section(tables)
+    if table_section:
+        return f"{body}\n\n{table_section}" if body else table_section
+    return body
+
+
+def _first_result(payload: object) -> dict | None:
+    """Pull the single ExtractionResult dict from a Kreuzberg response.
+
+    The shipping shape is a one-element JSON array. The bare-object branch
+    keeps us tolerant of older / variant builds that returned just the dict,
+    matching the previous ``_content_from_payload`` fallback semantics.
     """
     if isinstance(payload, list):
         if not payload:
-            return ""
+            return None
         first = payload[0]
-        if isinstance(first, dict) and isinstance(first.get("content"), str):
-            return first["content"]
-        return ""
+        return first if isinstance(first, dict) else None
     if isinstance(payload, dict):
-        if isinstance(payload.get("content"), str):
-            return payload["content"]
+        if "content" in payload:
+            return payload
         inner = payload.get("result")
-        if isinstance(inner, dict) and isinstance(inner.get("content"), str):
-            return inner["content"]
-    return ""
+        if isinstance(inner, dict):
+            return inner
+    return None
+
+
+# Whitelist of document-level metadata fields we surface from Kreuzberg's
+# response into Qdrant payload. Curated to retrieval-useful signals only —
+# producer/pdf_version/dimensions etc. would just bloat the payload.
+#
+# ``languages`` is sourced from the top-level ``detected_languages`` (renamed
+# to drop the "detected_" prefix that's now redundant in context); everything
+# else is read from ``metadata.{key}``.
+_DOC_META_FIELDS: tuple[str, ...] = ("title", "subject", "authors", "created_at")
+
+
+def _doc_meta_from_payload(payload: object) -> dict:
+    """Pick the retrieval-useful subset of document-level metadata.
+
+    Empty / falsy values are dropped so chunks don't carry
+    ``"subject": ""`` / ``"authors": []`` noise — the retrieval-agent
+    preview whitelist also drops empty values, so emitting them here
+    is just wasted bytes in Qdrant. Returns an empty dict for any
+    payload that doesn't expose usable doc meta.
+    """
+    result = _first_result(payload)
+    if result is None:
+        return {}
+    out: dict = {}
+    inner = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    for key in _DOC_META_FIELDS:
+        value = inner.get(key)
+        if value in (None, "", [], {}):
+            continue
+        out[key] = value
+    # ``detected_languages`` sits at the top level of the ExtractionResult,
+    # not under ``metadata``. We surface it as ``languages`` so the Qdrant
+    # payload key matches the keyword-index name in ``qdrant_setup.py``.
+    langs = result.get("detected_languages")
+    if isinstance(langs, list) and langs:
+        out["languages"] = langs
+    return out
+
+
+def _render_tables_section(tables: list) -> str:
+    """Render Kreuzberg's ``tables`` array as a Markdown section.
+
+    Each table goes under a ``### Table N (page X)`` H3 inside a parent
+    ``## Tables`` H2 so the structure-aware chunker (``CHUNK_SPLIT_BY=
+    markdown``) gives each table its own chunk with a ``meta.headers``
+    breadcrumb. Tables missing the pre-rendered ``markdown`` field are
+    skipped (we don't render from ``cells`` ourselves — Kreuzberg already
+    knows how, and falling back would risk shape drift). Numbering is
+    monotonic across **successfully** rendered tables — a skipped table
+    doesn't leave a gap in the visible count. Returns the empty string
+    if nothing can be rendered, so we never emit an empty heading.
+    """
+    blocks: list[str] = []
+    counter = 0
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        md = table.get("markdown")
+        if not isinstance(md, str) or not md.strip():
+            continue
+        counter += 1
+        page = table.get("page_number")
+        if isinstance(page, int) and not isinstance(page, bool):
+            heading = f"### Table {counter} (page {page})"
+        else:
+            heading = f"### Table {counter}"
+        blocks.append(f"{heading}\n\n{md.strip()}")
+    if not blocks:
+        return ""
+    return "## Tables\n\n" + "\n\n".join(blocks)

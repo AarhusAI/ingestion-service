@@ -75,6 +75,26 @@ def ensure_payload_indexes() -> None:
         else:
             raise
 
+    # Multilingual filtering — ``meta.languages`` is a list of ISO 639-1
+    # codes populated by the converter when language detection runs
+    # (Kreuzberg's ``detected_languages``). KEYWORD on a list-valued field
+    # supports MatchAny — perfect for "any of these languages". No consumer
+    # yet on the retrieval-agent side, but adding the index now means new
+    # ingests are searchable as soon as the filter call site lands.
+    field_name_lang = "meta.languages"
+    try:
+        client.create_payload_index(
+            collection_name=index_name,
+            field_name=field_name_lang,
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        log.info("created payload index on %s.%s", index_name, field_name_lang)
+    except UnexpectedResponse as exc:
+        if exc.status_code == 409:
+            log.debug("payload index on %s.%s already exists", index_name, field_name_lang)
+        else:
+            raise
+
 
 def health_check() -> bool:
     """True iff Qdrant is reachable and answering. Used by /health/ready."""
