@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_SUPPORTED_ENGINES = {"tika", "pypdf", "docling", "unstructured"}
+_SUPPORTED_ENGINES = {"tika", "pypdf", "docling", "unstructured", "kreuzberg"}
 
 
 @router.post(
@@ -51,7 +51,7 @@ async def extract(
         None,
         description=(
             "Optional override of EXTRACTION_ENGINE for this request. "
-            "One of: tika, pypdf, docling, unstructured. "
+            "One of: tika, pypdf, docling, unstructured, kreuzberg. "
             "When omitted, the configured engine is used."
         ),
         examples=["pypdf"],

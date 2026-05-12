@@ -15,10 +15,12 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # ----- Extraction -----
-    # tika | pypdf | docling | unstructured
+    # tika | pypdf | docling | unstructured | kreuzberg
+    # tika/kreuzberg run as external HTTP sidecars; the rest are in-process.
     # docling/unstructured require optional deps not bundled by default.
     extraction_engine: str = "tika"
     tika_url: str = "http://tika:9998"
+    kreuzberg_url: str = "http://kreuzberg:8000"
 
     # ----- Chunking -----
     # token mode measures chunk size with the embedding model's HuggingFace

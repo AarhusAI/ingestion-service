@@ -35,6 +35,19 @@ def test_build_converter_pypdf():
     assert type(c).__name__ == "PyPDFToDocument"
 
 
+def test_build_converter_kreuzberg():
+    s = _settings(extraction_engine="kreuzberg")
+    c = build_converter(s)
+    assert type(c).__name__ == "KreuzbergRemoteConverter"
+
+
+def test_build_converter_override_kreuzberg():
+    """``engine_override=kreuzberg`` wins over the configured engine."""
+    s = _settings(extraction_engine="tika")
+    c = build_converter(s, engine_override="kreuzberg")
+    assert type(c).__name__ == "KreuzbergRemoteConverter"
+
+
 def test_build_converter_unknown():
     s = _settings(extraction_engine="banana")
     with pytest.raises(ValueError, match="Unknown EXTRACTION_ENGINE"):

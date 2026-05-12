@@ -71,6 +71,27 @@ async def test_extract_unknown_engine_returns_400(client, api_headers):
     assert "banana" in detail["error"]
 
 
+async def test_extract_kreuzberg_engine_is_accepted(client, api_headers):
+    """Regression guard: the route-layer ``_SUPPORTED_ENGINES`` whitelist must
+    include ``kreuzberg``. Forgetting this returned 400 INVALID_REQUEST with
+    ``Unknown engine='kreuzberg' (supported: docling | pypdf | tika |
+    unstructured)`` even though the factory was wired correctly."""
+    fake_converter = MagicMock()
+    fake_converter.run.return_value = {"documents": [_fake_doc("ok")]}
+
+    with patch("app.routes.extract.build_converter", return_value=fake_converter) as build_mock:
+        response = await client.post(
+            "/api/v1/extract",
+            files={"file": ("a.txt", BytesIO(b"hello"), "text/plain")},
+            data={"engine": "kreuzberg"},
+            headers=api_headers,
+        )
+    assert response.status_code == 200
+    assert response.json()["engine"] == "kreuzberg"
+    _, kwargs = build_mock.call_args
+    assert kwargs["engine_override"] == "kreuzberg"
+
+
 async def test_extract_missing_file_returns_400(client, api_headers):
     # Multipart request body, but no ``file`` field — only ``engine``.
     response = await client.post(
