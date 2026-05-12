@@ -15,8 +15,8 @@ from __future__ import annotations
 import logging
 
 from haystack import Pipeline
-from haystack.components.preprocessors import DocumentSplitter
 from haystack.components.writers import DocumentWriter
+from haystack.utils import Secret
 from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
@@ -24,6 +24,7 @@ from app.config import Settings
 from app.config import settings as global_settings
 from app.pipelines.converters import build_converter
 from app.pipelines.embedders import build_dense_embedder, build_sparse_embedder
+from app.pipelines.splitter import build_splitter
 
 log = logging.getLogger(__name__)
 
@@ -50,9 +51,13 @@ def init_pipeline(settings: Settings | None = None) -> None:
 
 
 def _build_document_store(s: Settings) -> QdrantDocumentStore:
+    # QdrantDocumentStore.api_key must be a haystack Secret (or None);
+    # passing a plain string raises 'str' has no attribute 'resolve_value'
+    # at first write. Mirrors the pattern in embedders.py.
+    api_key = Secret.from_token(s.qdrant_api_key) if s.qdrant_api_key else None
     return QdrantDocumentStore(
         url=s.qdrant_uri,
-        api_key=s.qdrant_api_key,
+        api_key=api_key,
         index=s.qdrant_index,
         embedding_dim=s.embedding_dim,
         use_sparse_embeddings=s.enable_sparse_embeddings,
@@ -67,14 +72,9 @@ def _build_document_store(s: Settings) -> QdrantDocumentStore:
 def _build_pipeline(s: Settings, document_store: QdrantDocumentStore) -> Pipeline:
     pipeline = Pipeline()
     pipeline.add_component("converter", build_converter(s))
-    pipeline.add_component(
-        "splitter",
-        DocumentSplitter(
-            split_by=s.chunk_split_by,
-            split_length=s.chunk_size,
-            split_overlap=s.chunk_overlap,
-        ),
-    )
+    # Token-aware splitter when chunk_split_by="token" (default), Haystack's
+    # word/sentence/passage DocumentSplitter otherwise. See app/pipelines/splitter.py.
+    pipeline.add_component("splitter", build_splitter(s))
     pipeline.add_component("dense_embedder", build_dense_embedder(s))
 
     pipeline.connect("converter.documents", "splitter.documents")

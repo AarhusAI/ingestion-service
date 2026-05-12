@@ -22,9 +22,16 @@ class Settings(BaseSettings):
     tika_url: str = "http://tika:9998"
 
     # ----- Chunking -----
-    chunk_size: int = 440
-    chunk_overlap: int = 100
-    chunk_split_by: str = "word"  # word | sentence | passage
+    # token mode measures chunk size with the embedding model's HuggingFace
+    # tokenizer (xlm-r for e5, sentencepiece for bge-m3, etc.) so chunks
+    # respect the model's context window. word/sentence/passage delegate
+    # to Haystack's built-in DocumentSplitter and count by approximate units.
+    chunk_size: int = 400
+    chunk_overlap: int = 80
+    chunk_split_by: str = "token"  # token | word | sentence | passage
+    # Optional override; empty falls back to embedding_model. Only used in
+    # token mode.
+    tokenizer_model: str = ""
 
     # ----- Dense embedder (required) -----
     # openai-compat | fastembed | tei

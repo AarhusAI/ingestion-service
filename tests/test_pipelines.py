@@ -5,6 +5,7 @@ import pytest
 from app.config import Settings
 from app.pipelines.converters import build_converter
 from app.pipelines.embedders import build_dense_embedder, build_sparse_embedder
+from app.pipelines.splitter import build_splitter
 
 
 def _settings(**overrides) -> Settings:
@@ -79,3 +80,42 @@ def test_build_sparse_unknown_provider():
     s = _settings(enable_sparse_embeddings=True, sparse_embedding_provider="banana")
     with pytest.raises(ValueError, match="Unknown SPARSE_EMBEDDING_PROVIDER"):
         build_sparse_embedder(s)
+
+
+# -------------------- Splitters --------------------
+
+
+def test_build_splitter_word_returns_haystack_splitter():
+    s = _settings(chunk_split_by="word")
+    sp = build_splitter(s)
+    assert type(sp).__name__ == "DocumentSplitter"
+
+
+def test_build_splitter_token_requires_model():
+    s = _settings(chunk_split_by="token", embedding_model="", tokenizer_model="")
+    with pytest.raises(ValueError, match="TOKENIZER_MODEL or EMBEDDING_MODEL"):
+        build_splitter(s)
+
+
+def test_build_splitter_token_uses_hf_component(monkeypatch):
+    # Avoid the real tokenizer download; the component only stores the
+    # langchain splitter, so mock both layers.
+    from app.pipelines import splitter as splitter_mod
+
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda m: object())
+
+    class _FakeSplitter:
+        @classmethod
+        def from_huggingface_tokenizer(cls, *_args, **_kwargs):
+            return cls()
+
+        def split_text(self, text):
+            return [text]
+
+    monkeypatch.setattr(
+        "langchain_text_splitters.RecursiveCharacterTextSplitter",
+        _FakeSplitter,
+    )
+    s = _settings(chunk_split_by="token", embedding_model="intfloat/multilingual-e5-large")
+    sp = build_splitter(s)
+    assert type(sp).__name__ == "HuggingFaceTokenizerSplitter"

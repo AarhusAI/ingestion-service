@@ -17,6 +17,11 @@ dependencies = [
     "qdrant-client>=1.12.0,<3.0",
     "boto3>=1.35.0",
     "httpx>=0.27.0",
+    # Token-aware chunking: HuggingFace tokenizers + langchain's recursive
+    # splitter give chunk boundaries that respect the embedding model's
+    # context window (e5-large 512, bge-m3 8k, etc.).
+    "transformers>=4.40",
+    "langchain-text-splitters>=0.3",
 ]
 
 [project.optional-dependencies]
