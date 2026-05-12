@@ -25,13 +25,16 @@ class Settings(BaseSettings):
     # ----- Chunking -----
     # token mode measures chunk size with the embedding model's HuggingFace
     # tokenizer (xlm-r for e5, sentencepiece for bge-m3, etc.) so chunks
-    # respect the model's context window. word/sentence/passage delegate
-    # to Haystack's built-in DocumentSplitter and count by approximate units.
+    # respect the model's context window. markdown mode splits on Markdown
+    # headers first and token-packs each section, preserving a `meta.headers`
+    # breadcrumb — useful when the converter emits Markdown (Docling natively).
+    # word/sentence/passage delegate to Haystack's built-in DocumentSplitter
+    # and count by approximate units.
     chunk_size: int = 400
     chunk_overlap: int = 80
-    chunk_split_by: str = "token"  # token | word | sentence | passage
-    # Optional override; empty falls back to embedding_model. Only used in
-    # token mode.
+    chunk_split_by: str = "token"  # token | markdown | word | sentence | passage
+    # Optional override; empty falls back to embedding_model. Used in token
+    # and markdown modes.
     tokenizer_model: str = ""
 
     # ----- Dense embedder (required) -----
