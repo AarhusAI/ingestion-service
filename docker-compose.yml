@@ -30,7 +30,7 @@ services:
       start_period: 10s
     environment:
       # Auth
-      API_KEY: ${API_KEY:-CHANGE_ME_NOW}
+      API_KEY: "${API_KEY:?API_KEY must be set in .env or .env.local}"
       DEBUG: ${DEBUG:-false}
       # Extraction
       EXTRACTION_ENGINE: ${EXTRACTION_ENGINE:-tika}
@@ -41,8 +41,8 @@ services:
       CHUNK_SPLIT_BY: ${CHUNK_SPLIT_BY:-token}
       # Dense embedder
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai-compat}
-      EMBEDDING_API_BASE_URL: ${EMBEDDING_API_BASE_URL:-CHANGE_ME_NOW}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-CHANGE_ME_NOW}
+      EMBEDDING_API_BASE_URL: "${EMBEDDING_API_BASE_URL:?EMBEDDING_API_BASE_URL must be set in .env or .env.local}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:?EMBEDDING_API_KEY must be set in .env or .env.local}"
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-large}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
       EMBEDDING_PREFIX_DOC: "${EMBEDDING_PREFIX_DOC:-passage: }"

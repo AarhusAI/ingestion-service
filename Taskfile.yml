@@ -152,10 +152,24 @@ tasks:
   # Build
   # ---------------------------------------------------------------------------
   build:image:
-    desc: "Build and push production image to ghcr.io"
+    desc: "Build and push production image to ghcr.io (multi-arch). Override PLATFORMS to build one arch (e.g. PLATFORMS=linux/amd64) for faster local builds."
     vars:
       IMAGE: ghcr.io/aarhusai/ingestion-service
       TAG: '{{.TAG | default "latest"}}'
+      PLATFORMS: '{{.PLATFORMS | default "linux/amd64,linux/arm64"}}'
     cmds:
-      - docker build --target prod -t {{.IMAGE}}:{{.TAG}} .
-      - docker push {{.IMAGE}}:{{.TAG}}
+      - task: build:image:builder
+      - docker buildx build --builder ingestion-service-builder --platform {{.PLATFORMS}} --target prod -t {{.IMAGE}}:{{.TAG}} --push .
+
+  build:image:builder:
+    desc: "Ensure the buildx builder + QEMU binfmt handlers for multi-arch builds exist (idempotent first-run setup)."
+    internal: true
+    silent: true
+    cmds:
+      - cmd: |
+          if ! docker buildx inspect ingestion-service-builder >/dev/null 2>&1; then
+            echo "First-run setup: registering QEMU binfmt handlers (cross-arch emulation)..."
+            docker run --privileged --rm tonistiigi/binfmt --install all
+            echo "Creating buildx builder 'ingestion-service-builder' (docker-container driver)..."
+            docker buildx create --name ingestion-service-builder --driver docker-container --bootstrap
+          fi
