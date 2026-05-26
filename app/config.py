@@ -28,6 +28,31 @@ class Settings(BaseSettings):
             )
         return v
 
+    # ----- Shared URL scheme validator -----
+    # Applied to every URL-typed setting so a typo'd or maliciously-pointed
+    # value (`file://`, `gopher://`, a missing scheme) is rejected at
+    # startup rather than discovered at first connect. Fields stay typed as
+    # ``str`` so downstream consumers (httpx, boto3) don't need to coerce
+    # from a ``HttpUrl`` object. Empty strings are accepted because
+    # ``s3_endpoint_url`` and ``embedding_api_base_url`` use "" to mean
+    # "use the SDK's default endpoint resolution".
+    @field_validator(
+        "tika_url",
+        "kreuzberg_url",
+        "qdrant_uri",
+        "embedding_api_base_url",
+        "s3_endpoint_url",
+    )
+    @classmethod
+    def _validate_http_url(cls, v: str) -> str:
+        if not v:
+            return v
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError(
+                f"URL must start with http:// or https://; got {v!r}"
+            )
+        return v
+
     # ----- Server -----
     host: str = "0.0.0.0"
     port: int = 8000
