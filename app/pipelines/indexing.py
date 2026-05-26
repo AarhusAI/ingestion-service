@@ -13,7 +13,9 @@ are not left behind.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from contextlib import contextmanager
 
 from haystack import Pipeline
 from haystack.components.writers import DocumentWriter
@@ -32,6 +34,46 @@ log = logging.getLogger(__name__)
 
 _pipeline: Pipeline | None = None
 _document_store: QdrantDocumentStore | None = None
+
+# Per-file_id locks serialize concurrent ingests of the same file. Without
+# this, two requests racing on the same file_id can interleave the
+# delete-then-write step and leave either duplicate vectors (both writes
+# succeed) or no vectors (request A's teardown deletes request B's data
+# after B already finished). See sec.md Finding 7.
+#
+# Process-local: FastAPI runs sync handlers in a thread pool inside one
+# uvicorn worker process; multiple processes don't share state. Open WebUI's
+# per-file state machine gates same-file_id calls across processes upstream,
+# so a process-local lock is sufficient for the documented contract.
+_file_id_locks_lock = threading.Lock()
+_file_id_locks: dict[str, list] = {}  # file_id -> [Lock, refcount]
+
+
+@contextmanager
+def _per_file_id_lock(file_id: str):
+    """Acquire a Lock keyed on file_id; release and clean up on exit.
+
+    Entries are reference-counted so the registry doesn't grow unboundedly
+    across the lifetime of the worker — file_ids are unique UUIDs, so
+    without cleanup we'd accumulate one Lock per file ever ingested.
+    """
+    with _file_id_locks_lock:
+        entry = _file_id_locks.get(file_id)
+        if entry is None:
+            entry = [threading.Lock(), 0]
+            _file_id_locks[file_id] = entry
+        entry[1] += 1
+        lock = entry[0]
+
+    try:
+        with lock:
+            yield
+    finally:
+        with _file_id_locks_lock:
+            entry[1] -= 1
+            if entry[1] == 0:
+                # Last waiter released — drop the entry.
+                _file_id_locks.pop(file_id, None)
 
 
 def init_pipeline(settings: Settings | None = None) -> None:
@@ -124,6 +166,10 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> int:
     ``meta`` carries the document metadata (``file_id``, ``collection_name``,
     ``collection_type``, ``name``, ``source``, ``user_id``, ``overwrite``).
     Control fields (``overwrite``) are stripped before the meta hits Qdrant.
+
+    Concurrent ingests of the same ``file_id`` are serialized via
+    :func:`_per_file_id_lock` — see the comment on ``_file_id_locks`` for
+    the race this closes (sec.md Finding 7).
     """
     if _pipeline is None or _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")
@@ -131,24 +177,25 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> int:
     file_id = meta["file_id"]
     overwrite = meta.get("overwrite", True)
 
-    if overwrite:
-        _delete_existing_by_file_id(file_id)
+    with _per_file_id_lock(file_id):
+        if overwrite:
+            _delete_existing_by_file_id(file_id)
 
-    pipeline_meta = _strip_control_fields(meta)
-    try:
-        result = _pipeline.run({"converter": {"sources": [file_path], "meta": pipeline_meta}})
-        chunks_count = result["writer"]["documents_written"]
-        log.info(
-            "ingest ok: file_id=%s collection=%s chunks=%d",
-            file_id,
-            meta.get("collection_name"),
-            chunks_count,
-        )
-        return chunks_count
-    except Exception:
-        log.exception("ingest failed for file_id=%s; rolling back", file_id)
-        _delete_existing_by_file_id(file_id)
-        raise
+        pipeline_meta = _strip_control_fields(meta)
+        try:
+            result = _pipeline.run({"converter": {"sources": [file_path], "meta": pipeline_meta}})
+            chunks_count = result["writer"]["documents_written"]
+            log.info(
+                "ingest ok: file_id=%s collection=%s chunks=%d",
+                file_id,
+                meta.get("collection_name"),
+                chunks_count,
+            )
+            return chunks_count
+        except Exception:
+            log.exception("ingest failed for file_id=%s; rolling back", file_id)
+            _delete_existing_by_file_id(file_id)
+            raise
 
 
 def _delete_existing_by_file_id(file_id: str) -> None:

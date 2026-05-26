@@ -70,6 +70,92 @@ def test_init_pipeline_logs_warm_up_duration(monkeypatch, caplog):
     assert "warm_up=" in ready_lines[0]
 
 
+# ---------------------------------------------------------------------------
+# Per-file_id lock (sec.md Finding 7). Closes the delete-then-write race
+# when two requests hit the same file_id concurrently.
+# ---------------------------------------------------------------------------
+
+
+def test_per_file_id_lock_serializes_same_file_id():
+    """Two threads holding the same file_id lock execute sequentially."""
+    import threading
+
+    enter = threading.Event()
+    release = threading.Event()
+    order: list[str] = []
+
+    def first():
+        with indexing._per_file_id_lock("file-x"):
+            enter.set()
+            order.append("first-enter")
+            release.wait(timeout=2)
+            order.append("first-exit")
+
+    def second():
+        enter.wait(timeout=2)  # only start after `first` is holding the lock
+        with indexing._per_file_id_lock("file-x"):
+            order.append("second-enter")
+
+    t1 = threading.Thread(target=first)
+    t2 = threading.Thread(target=second)
+    t1.start()
+    t2.start()
+
+    enter.wait(timeout=2)
+    # second is now blocked behind first — it must not have entered yet.
+    assert order == ["first-enter"]
+    release.set()
+
+    t1.join(timeout=2)
+    t2.join(timeout=2)
+    assert order == ["first-enter", "first-exit", "second-enter"]
+
+
+def test_per_file_id_lock_does_not_block_different_file_ids():
+    """Different file_ids get independent locks — they don't serialize."""
+    import threading
+
+    inside_x = threading.Event()
+    release_x = threading.Event()
+    inside_y = threading.Event()
+
+    def hold_x():
+        with indexing._per_file_id_lock("file-x"):
+            inside_x.set()
+            release_x.wait(timeout=2)
+
+    def acquire_y():
+        inside_x.wait(timeout=2)  # only start after x is held
+        with indexing._per_file_id_lock("file-y"):
+            inside_y.set()
+
+    t_x = threading.Thread(target=hold_x)
+    t_y = threading.Thread(target=acquire_y)
+    t_x.start()
+    t_y.start()
+
+    # If file-y blocked behind file-x, inside_y would never set within the timeout.
+    assert inside_y.wait(timeout=2), "different file_ids should not serialize"
+    release_x.set()
+    t_x.join(timeout=2)
+    t_y.join(timeout=2)
+
+
+def test_per_file_id_lock_cleans_up_registry():
+    """After the last waiter releases, the file_id's entry is removed."""
+    # Snapshot keys before so we don't depend on test ordering.
+    before = set(indexing._file_id_locks.keys())
+
+    with indexing._per_file_id_lock("file-cleanup-test"):
+        # While held, the entry exists.
+        assert "file-cleanup-test" in indexing._file_id_locks
+
+    # After release, registry returns to its prior state — no leaked entry.
+    after = set(indexing._file_id_locks.keys())
+    assert "file-cleanup-test" not in after
+    assert after == before
+
+
 def test_init_pipeline_warm_up_error_propagates(monkeypatch):
     """If warm-up fails (e.g. HuggingFace unreachable on a fresh deploy),
     the error must propagate — failing to start is better than silently
