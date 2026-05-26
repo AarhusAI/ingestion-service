@@ -12,7 +12,11 @@ dependencies = [
     "haystack-ai>=2.10.0",
     "qdrant-haystack>=8.0.0",
     "fastembed-haystack>=1.5.0",
-    "tika>=2.6.0",                  # TikaDocumentConverter optional dep
+    # NB: Haystack's TikaDocumentConverter talks to the Tika sidecar over
+    # HTTP and does not need the in-process ``tika`` Python package (which
+    # historically auto-downloads the Tika JAR at first call). Don't add
+    # the ``tika`` package back unless something switches to JAR-mode —
+    # see sec.md Finding 12.
     "pypdf>=4.0",                   # PyPDFToDocument optional dep
     "qdrant-client>=1.12.0,<3.0",
     "boto3>=1.35.0",
@@ -32,6 +36,11 @@ dev = [
     "pytest-cov>=7.0",
     "moto[s3]>=5.0",
     "respx>=0.21.0",
+    # Security audit tooling. Run via `task audit` / `task lint:security`
+    # — both are advisory in CI by default; tighten to fail-on-finding
+    # once the baseline is clean. See sec.md Finding 12.
+    "pip-audit>=2.7",
+    "bandit>=1.7",
 ]
 
 [build-system]

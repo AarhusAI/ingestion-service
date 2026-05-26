@@ -25,6 +25,7 @@ from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app.config import Settings
 from app.config import settings as global_settings
+from app.log_utils import sanitize_for_log
 from app.pipelines.converters import build_converter
 from app.pipelines.embedders import build_dense_embedder, build_sparse_embedder
 from app.pipelines.splitter import build_splitter
@@ -187,13 +188,16 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> int:
             chunks_count = result["writer"]["documents_written"]
             log.info(
                 "ingest ok: file_id=%s collection=%s chunks=%d",
-                file_id,
-                meta.get("collection_name"),
+                sanitize_for_log(file_id),
+                sanitize_for_log(meta.get("collection_name")),
                 chunks_count,
             )
             return chunks_count
         except Exception:
-            log.exception("ingest failed for file_id=%s; rolling back", file_id)
+            log.exception(
+                "ingest failed for file_id=%s; rolling back",
+                sanitize_for_log(file_id),
+            )
             _delete_existing_by_file_id(file_id)
             raise
 
@@ -210,7 +214,10 @@ def _delete_existing_by_file_id(file_id: str) -> None:
         )
     except Exception:
         # If the collection doesn't exist yet (first ever ingest), this is fine.
-        log.debug("delete-by-file_id skipped (collection likely empty): file_id=%s", file_id)
+        log.debug(
+            "delete-by-file_id skipped (collection likely empty): file_id=%s",
+            sanitize_for_log(file_id),
+        )
 
 
 def _strip_control_fields(meta: dict) -> dict:

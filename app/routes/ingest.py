@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from app.auth import verify_api_key
 from app.config import settings
+from app.log_utils import sanitize_for_log
 from app.models import IngestError, IngestRequestJSON, IngestResponse
 from app.pipelines.indexing import run_indexing_pipeline
 from app.services.filenames import safe_suffix
@@ -120,13 +121,22 @@ def _fetch_from_s3(bucket: str, key: str) -> str:
         return fetch_object_to_tempfile(bucket=bucket, key=key)
     except S3ObjectTooLarge as exc:
         # Our own deterministic message — safe to reflect, doesn't leak internals.
-        log.warning("S3 fetch rejected (too large) for s3://%s/%s: %s", bucket, key, exc)
+        log.warning(
+            "S3 fetch rejected (too large) for s3://%s/%s: %s",
+            sanitize_for_log(bucket),
+            sanitize_for_log(key),
+            exc,
+        )
         raise HTTPException(
             status_code=413,
             detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
         ) from exc
     except Exception as exc:
-        log.exception("S3 fetch failed for s3://%s/%s", bucket, key)
+        log.exception(
+            "S3 fetch failed for s3://%s/%s",
+            sanitize_for_log(bucket),
+            sanitize_for_log(key),
+        )
         raise HTTPException(
             status_code=500,
             detail=_safe_error_detail("S3_FETCH_FAILED", exc),
@@ -294,7 +304,11 @@ def _run_pipeline_with_error_mapping(file_path: str, meta: dict[str, Any]) -> in
         raise
     except Exception as exc:
         code = _classify_pipeline_error(exc)
-        log.exception("pipeline failure (%s) for file_id=%s", code, meta.get("file_id"))
+        log.exception(
+            "pipeline failure (%s) for file_id=%s",
+            code,
+            sanitize_for_log(meta.get("file_id")),
+        )
         raise HTTPException(
             status_code=500,
             detail=_safe_error_detail(code, exc),

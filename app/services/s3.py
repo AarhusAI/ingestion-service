@@ -15,6 +15,7 @@ from botocore.client import BaseClient
 from botocore.config import Config
 
 from app.config import settings
+from app.log_utils import sanitize_for_log
 from app.services.filenames import safe_suffix
 
 log = logging.getLogger(__name__)
@@ -54,7 +55,11 @@ def fetch_object_to_tempfile(bucket: str, key: str) -> str:
     ``settings.max_upload_bytes``; raises on transport / 404 / auth errors
     otherwise.
     """
-    log.info("s3 fetch: bucket=%s key=%s", bucket, key)
+    log.info(
+        "s3 fetch: bucket=%s key=%s",
+        sanitize_for_log(bucket),
+        sanitize_for_log(key),
+    )
 
     # head_object before download so we don't stream a multi-GB object onto
     # local disk just to reject it. ContentLength is authoritative when the

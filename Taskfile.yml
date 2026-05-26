@@ -138,6 +138,26 @@ tasks:
       - "{{.PYTHON}} pytest --cov=app --cov-report=term-missing -v"
 
   # ==========================================================================
+  # Security audit
+  # ==========================================================================
+
+  audit:
+    desc: Run all security audit tools (advisory, doesn't fail CI by default)
+    cmds:
+      - task: audit:deps
+      - task: audit:code
+
+  audit:deps:
+    desc: Scan installed dependencies for known CVEs (pip-audit)
+    cmds:
+      - "{{.PYTHON}} pip-audit --strict || true"
+
+  audit:code:
+    desc: Static security scan of app/ (bandit)
+    cmds:
+      - "{{.PYTHON}} bandit -r app/ -ll || true"
+
+  # ==========================================================================
   # Code Checks (CI)
   # ==========================================================================
 
