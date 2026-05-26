@@ -164,6 +164,43 @@ def test_url_trailing_slash_normalised(tmp_path):
     assert c._url == "http://fake-kreuzberg:8000/extract"
 
 
+def test_constructor_splits_connect_and_read_timeouts():
+    """Connect and read timeouts must land as separate fields on the httpx.Timeout.
+
+    Regression test for sec.md Finding 9: a single blanket timeout meant a
+    stalled sidecar tied up the worker for the full read window."""
+    c = KreuzbergRemoteConverter(
+        kreuzberg_url="http://x",
+        connect_timeout=3.0,
+        read_timeout=45.0,
+    )
+    assert c._timeout.connect == 3.0
+    assert c._timeout.read == 45.0
+    # Default verify=True.
+    assert c._verify is True
+
+
+def test_constructor_honours_verify_false():
+    """An explicit verify=False is preserved (not silently re-enabled)."""
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://x", verify=False)
+    assert c._verify is False
+
+
+def test_factory_threads_timeout_and_verify_settings_through(monkeypatch):
+    """build_converter must pass the kreuzberg_* settings into the converter."""
+    from app.config import settings
+    from app.pipelines.converters import build_converter
+
+    monkeypatch.setattr(settings, "kreuzberg_connect_timeout", 7.5)
+    monkeypatch.setattr(settings, "kreuzberg_read_timeout", 90.0)
+    monkeypatch.setattr(settings, "kreuzberg_tls_verify", False)
+
+    c = build_converter(settings, engine_override="kreuzberg")
+    assert c._timeout.connect == 7.5
+    assert c._timeout.read == 90.0
+    assert c._verify is False
+
+
 # ---------------------------------------------------------------------------
 # Tables rendering — Kreuzberg returns tables as a separate structured array.
 # We rescue them from the body-content flattening by appending as Markdown.

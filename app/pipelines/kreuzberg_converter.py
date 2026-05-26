@@ -63,9 +63,25 @@ class KreuzbergRemoteConverter:
     is the source of truth for Qdrant payload.
     """
 
-    def __init__(self, kreuzberg_url: str, timeout: float = 60.0):
+    def __init__(
+        self,
+        kreuzberg_url: str,
+        *,
+        connect_timeout: float = 5.0,
+        read_timeout: float = 60.0,
+        verify: bool = True,
+    ):
         self._url = kreuzberg_url.rstrip("/") + "/extract"
-        self._timeout = timeout
+        # Split timeout — connect fails fast so a stalled sidecar doesn't
+        # tie up a worker for the full read window. Write/pool reuse the
+        # connect value: nothing about the upload is read-shaped.
+        self._timeout = httpx.Timeout(
+            connect=connect_timeout,
+            read=read_timeout,
+            write=connect_timeout,
+            pool=connect_timeout,
+        )
+        self._verify = verify
 
     @component.output_types(documents=list[Document])
     def run(
@@ -89,7 +105,12 @@ class KreuzbergRemoteConverter:
                     # Field name must be ``files`` — verified against the
                     # 4.0.x API server. ``file`` returns 400 "No files provided".
                     files = {"files": (path.name, fh, content_type)}
-                    resp = httpx.post(self._url, files=files, timeout=self._timeout)
+                    resp = httpx.post(
+                        self._url,
+                        files=files,
+                        timeout=self._timeout,
+                        verify=self._verify,
+                    )
                 resp.raise_for_status()
             except httpx.HTTPError as exc:
                 # Typed so the route-layer classifier dispatches on isinstance

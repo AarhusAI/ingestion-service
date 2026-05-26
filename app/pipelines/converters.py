@@ -60,7 +60,12 @@ def build_converter(settings: Settings, engine_override: str | None = None):
         # just httpx, which is already required.
         from app.pipelines.kreuzberg_converter import KreuzbergRemoteConverter
 
-        return KreuzbergRemoteConverter(kreuzberg_url=settings.kreuzberg_url)
+        return KreuzbergRemoteConverter(
+            kreuzberg_url=settings.kreuzberg_url,
+            connect_timeout=settings.kreuzberg_connect_timeout,
+            read_timeout=settings.kreuzberg_read_timeout,
+            verify=settings.kreuzberg_tls_verify,
+        )
 
     raise ValueError(
         f"Unknown EXTRACTION_ENGINE={engine!r} "

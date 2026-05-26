@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     extraction_engine: str = "tika"
     tika_url: str = "http://tika:9998"
     kreuzberg_url: str = "http://kreuzberg:8000"
+    # Split connect vs read timeout for the Kreuzberg sidecar. A single
+    # 60-second blanket value (the previous default) means a sidecar that
+    # accepts the TCP handshake but never replies ties up a worker for the
+    # full read window. Connect should fail fast; read can be long because
+    # the actual extraction is CPU-bound.
+    kreuzberg_connect_timeout: float = 5.0
+    kreuzberg_read_timeout: float = 60.0
+    # Explicit setting so a future operator pointing the sidecar at an
+    # https:// URL with a self-signed cert can't quietly disable
+    # verification with verify=False. Default True; set to false only with
+    # full awareness.
+    kreuzberg_tls_verify: bool = True
 
     # ----- Chunking -----
     # token mode measures chunk size with the embedding model's HuggingFace
