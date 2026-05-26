@@ -15,6 +15,7 @@ from botocore.client import BaseClient
 from botocore.config import Config
 
 from app.config import settings
+from app.services.filenames import safe_suffix
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def fetch_object_to_tempfile(bucket: str, key: str) -> str:
     # after the pipeline runs. Using a `with` block here would delete the file
     # before the pipeline can open it.
     fh = tempfile.NamedTemporaryFile(  # noqa: SIM115
-        delete=False, suffix=_suffix_for_key(key)
+        delete=False, suffix=safe_suffix(key)
     )
     try:
         _client().download_fileobj(bucket, key, fh)
@@ -89,13 +90,6 @@ def fetch_object_to_tempfile(bucket: str, key: str) -> str:
         raise
     finally:
         fh.close()
-
-
-def _suffix_for_key(key: str) -> str:
-    """Preserve the file extension so Tika / converters can dispatch by suffix."""
-    if "." in key:
-        return "." + key.rsplit(".", 1)[-1]
-    return ""
 
 
 def reset_client() -> None:

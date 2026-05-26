@@ -24,6 +24,7 @@ from app.auth import verify_api_key
 from app.config import settings
 from app.models import IngestError, IngestRequestJSON, IngestResponse
 from app.pipelines.indexing import run_indexing_pipeline
+from app.services.filenames import safe_suffix
 from app.services.s3 import S3ObjectTooLarge, fetch_object_to_tempfile
 
 log = logging.getLogger(__name__)
@@ -145,14 +146,12 @@ async def stream_upload_to_tempfile(upload) -> str:
     only caps non-file form fields, so file uploads are otherwise unbounded
     and a single request can fill ``/tmp``.
     """
-    suffix = ""
-    if upload.filename and "." in upload.filename:
-        suffix = "." + upload.filename.rsplit(".", 1)[-1]
-
     # delete=False is intentional — caller (route handler) owns the file's lifetime
     # and unlinks it after the pipeline runs. Using a `with` block here would close
     # and delete the file before the pipeline can read it.
-    fh = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)  # noqa: SIM115
+    fh = tempfile.NamedTemporaryFile(  # noqa: SIM115
+        delete=False, suffix=safe_suffix(upload.filename or "")
+    )
     written = 0
     max_bytes = settings.max_upload_bytes
     try:
