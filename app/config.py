@@ -1,4 +1,12 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+# Minimum length enforced on ``API_KEY``. The bearer is a shared static
+# secret with no per-IP rate limiting; below ~32 chars of entropy it
+# becomes feasible to brute-force given enough request budget. Kept here
+# (not in Settings) so the value is referenced from the validator without
+# a self-reference cycle.
+API_KEY_MIN_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -8,6 +16,17 @@ class Settings(BaseSettings):
 
     # ----- Auth -----
     api_key: str
+
+    @field_validator("api_key")
+    @classmethod
+    def _api_key_min_length(cls, v: str) -> str:
+        if len(v) < API_KEY_MIN_LENGTH:
+            raise ValueError(
+                f"API_KEY must be at least {API_KEY_MIN_LENGTH} characters. "
+                f"Got {len(v)}. Generate a high-entropy token with: "
+                "openssl rand -hex 32"
+            )
+        return v
 
     # ----- Server -----
     host: str = "0.0.0.0"

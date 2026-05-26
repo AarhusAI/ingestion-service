@@ -1,7 +1,7 @@
 import os
 
 # Override env vars BEFORE any app imports (Settings() runs at import time).
-os.environ["API_KEY"] = "test-api-key"
+os.environ["API_KEY"] = "test-api-key-padded-to-min-length-x"
 os.environ["EMBEDDING_API_BASE_URL"] = "http://fake-embedding:8080"
 os.environ["EMBEDDING_API_KEY"] = "fake-key"
 os.environ["EMBEDDING_MODEL"] = "intfloat/multilingual-e5-large"
@@ -23,12 +23,12 @@ from app.config import settings
 from app.services import s3 as s3_service
 
 # Force settings to match test env (in case .env file or container env overrode them)
-settings.api_key = "test-api-key"
+settings.api_key = "test-api-key-padded-to-min-length-x"
 
 
 @pytest.fixture
 def api_headers():
-    return {"Authorization": "Bearer test-api-key"}
+    return {"Authorization": "Bearer test-api-key-padded-to-min-length-x"}
 
 
 @pytest.fixture
