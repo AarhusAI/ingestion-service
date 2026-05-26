@@ -185,6 +185,101 @@ class _OpenAIError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# S3 bucket allow-list (see Finding 1 in sec.md).
+# ---------------------------------------------------------------------------
+
+
+async def test_s3_bucket_not_in_allowlist_rejected(client, api_headers, monkeypatch):
+    """When S3_ALLOWED_BUCKETS is set, a bucket outside it returns 403."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "s3_allowed_buckets", "openwebui,knowledge")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile") as fetch_mock,
+        patch("app.routes.ingest.run_indexing_pipeline") as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "other-tenant-bucket",
+                "s3_key": "private/secrets.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    # Must reject before any S3 / pipeline work.
+    fetch_mock.assert_not_called()
+    run_mock.assert_not_called()
+
+
+async def test_s3_bucket_in_allowlist_allowed(client, api_headers, monkeypatch, tmp_path):
+    """A bucket in the allow-list is permitted through."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "s3_allowed_buckets", "openwebui,knowledge")
+
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=1),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
+async def test_empty_allowlist_skips_enforcement(client, api_headers, monkeypatch, tmp_path):
+    """Empty S3_ALLOWED_BUCKETS = no enforcement (matches startup warning behaviour)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "s3_allowed_buckets", "")
+
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=1),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "anything",
+                "s3_key": "x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Upload size cap (see Finding 3 in sec.md). Both the multipart file part
 # and the S3 ContentLength must be capped at settings.max_upload_bytes.
 # ---------------------------------------------------------------------------

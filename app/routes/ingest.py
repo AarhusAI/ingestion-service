@@ -55,6 +55,7 @@ async def ingest(
                 status_code=400,
                 detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
             ) from exc
+        _check_bucket_allowed(body.s3_bucket)
         local_path = _fetch_from_s3(body.s3_bucket, body.s3_key)
         meta = _meta_from_request(body)
     elif content_type.startswith("multipart/form-data"):
@@ -86,6 +87,31 @@ async def ingest(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _check_bucket_allowed(bucket: str) -> None:
+    """Refuse fetches against buckets outside ``S3_ALLOWED_BUCKETS``.
+
+    Defense in depth: Open WebUI today derives ``s3_bucket`` server-side from
+    ``file.path``, so end users can't directly choose what to read. A stolen
+    API key or a future caller-side regression would re-open the path. The
+    allow-list closes it at the service boundary.
+
+    Empty allow-list = no enforcement (preserves behaviour for deployments
+    that haven't configured the setting yet) — startup logs a warning so the
+    gap is visible.
+    """
+    allowed = settings.allowed_buckets
+    if not allowed:
+        return
+    if bucket not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=IngestError(
+                error=f"S3 bucket {bucket!r} is not in S3_ALLOWED_BUCKETS",
+                code="INVALID_REQUEST",
+            ).model_dump(),
+        )
 
 
 def _fetch_from_s3(bucket: str, key: str) -> str:

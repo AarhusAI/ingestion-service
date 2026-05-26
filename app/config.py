@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
     s3_region: str = "us-east-1"
+    # Comma-separated allow-list of buckets the service is permitted to fetch
+    # from. Empty (default) = no enforcement, log a startup warning. Set this
+    # in production so a stolen API key or a future regression in the caller
+    # can't be used to exfiltrate arbitrary objects from the configured S3
+    # credentials' reach.
+    s3_allowed_buckets: str = ""
+
+    @property
+    def allowed_buckets(self) -> set[str]:
+        return {b.strip() for b in self.s3_allowed_buckets.split(",") if b.strip()}
 
 
 settings = Settings()

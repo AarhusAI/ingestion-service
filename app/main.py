@@ -53,6 +53,12 @@ async def lifespan(app: FastAPI):
         settings.chunk_overlap,
     )
 
+    if not settings.allowed_buckets:
+        log.warning(
+            "S3_ALLOWED_BUCKETS is empty — any bucket the configured S3 credentials "
+            "can reach is fetchable. Set S3_ALLOWED_BUCKETS to lock this down."
+        )
+
     init_pipeline()
     qdrant_setup.ensure_payload_indexes()
 
