@@ -184,6 +184,127 @@ class _OpenAIError(Exception):
     """Stand-in for an embedder exception with 'OpenAI' in the class name."""
 
 
+# ---------------------------------------------------------------------------
+# Collection-name binding (defense in depth — see Finding 2 in sec.md).
+# ---------------------------------------------------------------------------
+
+
+async def test_user_memory_collection_must_match_user_id(client, api_headers, tmp_path):
+    """user-memory-* collection_name targeting a different user_id is rejected with 403."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=42) as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/m.pdf",
+                "file_id": "abc",
+                "filename": "m.pdf",
+                "collection_name": "user-memory-victim",
+                "collection_type": "memory",
+                "user_id": "attacker",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    # Pipeline must not have been invoked when the binding check fails.
+    run_mock.assert_not_called()
+
+
+async def test_user_memory_collection_matching_user_id_is_allowed(
+    client, api_headers, tmp_path
+):
+    """user-memory-{uid} with matching user_id is allowed through."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=3),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/m.pdf",
+                "file_id": "abc",
+                "filename": "m.pdf",
+                "collection_name": "user-memory-u-1",
+                "collection_type": "memory",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
+async def test_file_collection_must_match_file_id(client, api_headers, tmp_path):
+    """file-* collection_name targeting a different file_id is rejected with 403."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=42) as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/report.pdf",
+                "file_id": "attacker-file",
+                "filename": "report.pdf",
+                "collection_name": "file-victim-file",
+                "collection_type": "file",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_knowledge_collection_passes_through(client, api_headers, tmp_path):
+    """Knowledge / web-search / hash-based collection names can't be locally
+    validated and are passed through (Open WebUI gates these upstream)."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=5),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "kb/file.pdf",
+                "file_id": "abc",
+                "filename": "file.pdf",
+                "collection_name": "kb-12345",
+                "collection_type": "knowledge",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
 @pytest.mark.parametrize(
     "exc, expected",
     [

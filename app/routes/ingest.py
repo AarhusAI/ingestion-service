@@ -69,6 +69,7 @@ async def ingest(
         )
 
     try:
+        _validate_collection_binding(meta)
         chunks = _run_pipeline_with_error_mapping(local_path, meta)
     finally:
         with contextlib.suppress(OSError):
@@ -177,6 +178,55 @@ def _form_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).lower() in ("true", "1", "yes", "y")
+
+
+def _validate_collection_binding(meta: dict[str, Any]) -> None:
+    """Defense-in-depth: refuse caller-supplied collection_name values that the
+    caller demonstrably doesn't own.
+
+    Open WebUI is supposed to gate this on the write path, but a single missing
+    check there would let any authenticated user poison another tenant's
+    collection (the ``_validate_collection_access`` helper in Open WebUI is
+    only wired into the query routes). Re-asserting the binding here means a
+    future regression in Open WebUI doesn't silently re-open the hole.
+
+    Enforces two patterns the service can verify locally:
+    - ``user-memory-{uid}`` must match ``meta.user_id``.
+    - ``file-{fid}`` must match ``meta.file_id``.
+
+    Other collection types (``knowledge``, ``web-search``, ``hash-based``)
+    can't be verified without an Open WebUI API call and are passed through.
+    """
+    collection_name = meta.get("collection_name", "")
+    user_id = meta.get("user_id", "")
+    file_id = meta.get("file_id", "")
+
+    if collection_name.startswith("user-memory-"):
+        expected = f"user-memory-{user_id}"
+        if collection_name != expected:
+            raise HTTPException(
+                status_code=403,
+                detail=IngestError(
+                    error=(
+                        f"collection_name {collection_name!r} not authorized "
+                        f"for user_id={user_id!r}"
+                    ),
+                    code="INVALID_REQUEST",
+                ).model_dump(),
+            )
+    elif collection_name.startswith("file-"):
+        expected = f"file-{file_id}"
+        if collection_name != expected:
+            raise HTTPException(
+                status_code=403,
+                detail=IngestError(
+                    error=(
+                        f"collection_name {collection_name!r} does not match "
+                        f"file_id={file_id!r}"
+                    ),
+                    code="INVALID_REQUEST",
+                ).model_dump(),
+            )
 
 
 def _run_pipeline_with_error_mapping(file_path: str, meta: dict[str, Any]) -> int:
