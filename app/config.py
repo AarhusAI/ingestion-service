@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # Optional override; empty falls back to embedding_model. Used in token
     # and markdown modes.
     tokenizer_model: str = ""
+    # Pin the HuggingFace Hub revision (branch, tag, or commit SHA) used when
+    # downloading the tokenizer. Empty = whatever HEAD resolves to at fetch
+    # time. Pinning a commit SHA in production prevents an upstream model swap
+    # or HF account compromise from silently changing tokenizer behaviour.
+    tokenizer_revision: str = ""
 
     # ----- Dense embedder (required) -----
     # openai-compat | fastembed | tei

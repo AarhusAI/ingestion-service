@@ -32,17 +32,22 @@ log = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=4)
-def _load_tokenizer(model_name: str):
+def _load_tokenizer(model_name: str, revision: str = ""):
     """Load and cache a HuggingFace tokenizer.
 
     ``AutoTokenizer.from_pretrained`` takes ~1-3s and downloads to the HF
     cache on first use. Cached so the pipeline doesn't reload per request.
     Thread-safe in CPython thanks to the GIL.
+
+    ``revision`` pins a Hub branch, tag, or commit SHA. Empty string means
+    "Hub HEAD at fetch time" — fine for dev, but production deployments
+    should pin a SHA so an upstream model swap can't change tokenizer
+    behaviour underneath the running service.
     """
     from transformers import AutoTokenizer
 
-    log.info("loading HuggingFace tokenizer: %s", model_name)
-    return AutoTokenizer.from_pretrained(model_name)
+    log.info("loading HuggingFace tokenizer: %s (revision=%s)", model_name, revision or "HEAD")
+    return AutoTokenizer.from_pretrained(model_name, revision=revision or None)
 
 
 @component
@@ -55,10 +60,16 @@ class HuggingFaceTokenizerSplitter:
     the source document's meta and gets a ``split_id`` for ordering.
     """
 
-    def __init__(self, tokenizer_model: str, chunk_size: int, chunk_overlap: int):
+    def __init__(
+        self,
+        tokenizer_model: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        tokenizer_revision: str = "",
+    ):
         from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-        tokenizer = _load_tokenizer(tokenizer_model)
+        tokenizer = _load_tokenizer(tokenizer_model, tokenizer_revision)
         self._splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
             tokenizer,
             chunk_size=chunk_size,
@@ -107,7 +118,13 @@ class MarkdownChunker:
         ("###", "h3"),
     ]
 
-    def __init__(self, tokenizer_model: str, chunk_size: int, chunk_overlap: int):
+    def __init__(
+        self,
+        tokenizer_model: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        tokenizer_revision: str = "",
+    ):
         from langchain_text_splitters import (
             MarkdownHeaderTextSplitter,
             RecursiveCharacterTextSplitter,
@@ -119,7 +136,7 @@ class MarkdownChunker:
             headers_to_split_on=self._HEADERS,
             strip_headers=False,
         )
-        tokenizer = _load_tokenizer(tokenizer_model)
+        tokenizer = _load_tokenizer(tokenizer_model, tokenizer_revision)
         self._token_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
             tokenizer,
             chunk_size=chunk_size,
@@ -194,6 +211,7 @@ def build_splitter(s: Settings):
             tokenizer_model=model,
             chunk_size=s.chunk_size,
             chunk_overlap=s.chunk_overlap,
+            tokenizer_revision=s.tokenizer_revision,
         )
 
     if mode == "markdown":
@@ -206,6 +224,7 @@ def build_splitter(s: Settings):
             tokenizer_model=model,
             chunk_size=s.chunk_size,
             chunk_overlap=s.chunk_overlap,
+            tokenizer_revision=s.tokenizer_revision,
         )
 
     # Haystack handles word/sentence/passage natively; chunk_size is in those units.

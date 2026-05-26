@@ -135,7 +135,7 @@ def test_huggingface_tokenizer_splitter_run(monkeypatch):
 
     from app.pipelines import splitter as splitter_mod
 
-    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m: object())
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": object())
 
     class _FakeSplitter:
         @classmethod
@@ -174,7 +174,7 @@ def test_build_splitter_token_uses_hf_component(monkeypatch):
     # langchain splitter, so mock both layers.
     from app.pipelines import splitter as splitter_mod
 
-    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m: object())
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": object())
 
     class _FakeSplitter:
         @classmethod
@@ -217,7 +217,7 @@ def _patch_markdown_chunker(monkeypatch, *, header_sections, token_pieces=None):
         def encode(self, text, add_special_tokens=False):
             return text.split()
 
-    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m: _FakeTokenizer())
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": _FakeTokenizer())
 
     class _FakeMarkdownHeaderSplitter:
         def __init__(self, headers_to_split_on=None, strip_headers=False):

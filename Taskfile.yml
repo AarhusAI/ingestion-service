@@ -9,7 +9,7 @@ vars:
   CONTAINER_RUNTIME: '{{.CONTAINER_RUNTIME | default "docker"}}'
   DOCKER_COMPOSE: '{{.CONTAINER_COMPOSE | default "docker compose"}}'
   SERVICE: ingestion
-  PYTHON: "{{.DOCKER_COMPOSE}} exec {{.SERVICE}}"
+  PYTHON: "docker exec -e HOME=/tmp -i openwebui-ingestion-1"
 
 tasks:
   # ==========================================================================
@@ -150,12 +150,12 @@ tasks:
   audit:deps:
     desc: Scan installed dependencies for known CVEs (pip-audit)
     cmds:
-      - "{{.PYTHON}} pip-audit --strict || true"
+      - "{{.PYTHON}} pip-audit --strict ."
 
   audit:code:
     desc: Static security scan of app/ (bandit)
     cmds:
-      - "{{.PYTHON}} bandit -r app/ -ll || true"
+      - "{{.PYTHON}} bandit -r app/ -ll"
 
   # ==========================================================================
   # Code Checks (CI)
