@@ -21,7 +21,7 @@ from app.services.filenames import safe_suffix
 log = logging.getLogger(__name__)
 
 
-__all__ = ["fetch_object_to_tempfile", "reset_client", "S3ObjectTooLarge"]
+__all__ = ["S3ObjectTooLarge", "fetch_object_to_tempfile", "reset_client"]
 
 
 @lru_cache(maxsize=1)

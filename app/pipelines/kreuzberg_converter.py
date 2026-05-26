@@ -117,9 +117,7 @@ class KreuzbergRemoteConverter:
                 # rather than substring-matching the message — substring matches
                 # were fragile (the old classifier missed real pypdf/openai
                 # class names entirely; see sec.md Finding 5).
-                raise ExtractionError(
-                    f"kreuzberg extract failed for {path.name}: {exc}"
-                ) from exc
+                raise ExtractionError(f"kreuzberg extract failed for {path.name}: {exc}") from exc
 
             payload = resp.json()
             content = _content_from_payload(payload)

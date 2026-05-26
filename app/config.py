@@ -48,9 +48,7 @@ class Settings(BaseSettings):
         if not v:
             return v
         if not (v.startswith("http://") or v.startswith("https://")):
-            raise ValueError(
-                f"URL must start with http:// or https://; got {v!r}"
-            )
+            raise ValueError(f"URL must start with http:// or https://; got {v!r}")
         return v
 
     # ----- Server -----

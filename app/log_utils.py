@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-# C0 controls (0x00–0x1F) plus DEL (0x7F). Covers newlines, carriage
+# C0 controls (0x00-0x1F) plus DEL (0x7F). Covers newlines, carriage
 # returns, NUL, and the ANSI CSI introducer (0x1B). Bytes above 0x7F
 # (UTF-8 continuation, printable Unicode) are left alone — log handlers
 # encode them safely and stripping them would mangle non-ASCII filenames.
@@ -36,5 +36,5 @@ def sanitize_for_log(value: object, max_len: int = 200) -> str:
     s = str(value)
     sanitized = _CONTROL_CHARS.sub("?", s)
     if len(sanitized) > max_len:
-        sanitized = sanitized[: max_len] + "..."
+        sanitized = sanitized[:max_len] + "..."
     return sanitized

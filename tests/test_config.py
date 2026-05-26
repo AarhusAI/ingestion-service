@@ -10,7 +10,6 @@ from pydantic import ValidationError
 
 from app.config import Settings
 
-
 _BASE = {
     "api_key": "a" * 32,
     "embedding_api_base_url": "http://embed.local",

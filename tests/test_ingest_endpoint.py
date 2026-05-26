@@ -403,9 +403,7 @@ async def test_user_memory_collection_must_match_user_id(client, api_headers, tm
     run_mock.assert_not_called()
 
 
-async def test_user_memory_collection_matching_user_id_is_allowed(
-    client, api_headers, tmp_path
-):
+async def test_user_memory_collection_matching_user_id_is_allowed(client, api_headers, tmp_path):
     """user-memory-{uid} with matching user_id is allowed through."""
     fake_local = str(tmp_path / "fake.pdf")
     with open(fake_local, "wb") as fh:
@@ -501,10 +499,7 @@ def test_classify_dispatches_on_typed_errors():
 
     assert _classify_pipeline_error(ExtractionError("any text")) == "EXTRACTION_FAILED"
     assert _classify_pipeline_error(EmbeddingError("any text")) == "EMBEDDING_FAILED"
-    assert (
-        _classify_pipeline_error(SparseEmbeddingError("any text"))
-        == "SPARSE_EMBEDDING_FAILED"
-    )
+    assert _classify_pipeline_error(SparseEmbeddingError("any text")) == "SPARSE_EMBEDDING_FAILED"
     assert _classify_pipeline_error(QdrantWriteError("any text")) == "QDRANT_WRITE_FAILED"
 
 
@@ -517,8 +512,7 @@ def test_classify_dispatches_on_pypdf_real_class():
     from app.routes.ingest import _classify_pipeline_error
 
     assert (
-        _classify_pipeline_error(pypdf_errors.PdfReadError("bad page tree"))
-        == "EXTRACTION_FAILED"
+        _classify_pipeline_error(pypdf_errors.PdfReadError("bad page tree")) == "EXTRACTION_FAILED"
     )
 
 

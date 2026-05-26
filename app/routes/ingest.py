@@ -288,8 +288,7 @@ def _validate_collection_binding(meta: dict[str, Any]) -> None:
                 status_code=403,
                 detail=IngestError(
                     error=(
-                        f"collection_name {collection_name!r} does not match "
-                        f"file_id={file_id!r}"
+                        f"collection_name {collection_name!r} does not match file_id={file_id!r}"
                     ),
                     code="INVALID_REQUEST",
                 ).model_dump(),
@@ -340,10 +339,7 @@ def _safe_error_detail(code: str, exc: Exception) -> dict:
     no AWS request IDs). Operators flipping ``DEBUG=true`` get ``str(exc)``
     for local triage. Logs always carry the full traceback regardless.
     """
-    if settings.debug:
-        message = str(exc)
-    else:
-        message = _SAFE_ERROR_MESSAGES.get(code, "Internal error.")
+    message = str(exc) if settings.debug else _SAFE_ERROR_MESSAGES.get(code, "Internal error.")
     return IngestError(error=message, code=code).model_dump()
 
 
