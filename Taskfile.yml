@@ -9,7 +9,7 @@ vars:
   CONTAINER_RUNTIME: '{{.CONTAINER_RUNTIME | default "docker"}}'
   DOCKER_COMPOSE: '{{.CONTAINER_COMPOSE | default "docker compose"}}'
   SERVICE: ingestion
-  PYTHON: "docker exec -e HOME=/tmp -i openwebui-ingestion-1"
+  PYTHON: "{{.DOCKER_COMPOSE}} exec {{.SERVICE}}"
 
 tasks:
   # ==========================================================================
