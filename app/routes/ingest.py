@@ -118,6 +118,7 @@ def _fetch_from_s3(bucket: str, key: str) -> str:
     try:
         return fetch_object_to_tempfile(bucket=bucket, key=key)
     except S3ObjectTooLarge as exc:
+        # Our own deterministic message — safe to reflect, doesn't leak internals.
         log.warning("S3 fetch rejected (too large) for s3://%s/%s: %s", bucket, key, exc)
         raise HTTPException(
             status_code=413,
@@ -127,7 +128,7 @@ def _fetch_from_s3(bucket: str, key: str) -> str:
         log.exception("S3 fetch failed for s3://%s/%s", bucket, key)
         raise HTTPException(
             status_code=500,
-            detail=IngestError(error=str(exc), code="S3_FETCH_FAILED").model_dump(),
+            detail=_safe_error_detail("S3_FETCH_FAILED", exc),
         ) from exc
 
 
@@ -297,8 +298,40 @@ def _run_pipeline_with_error_mapping(file_path: str, meta: dict[str, Any]) -> in
         log.exception("pipeline failure (%s) for file_id=%s", code, meta.get("file_id"))
         raise HTTPException(
             status_code=500,
-            detail=IngestError(error=str(exc), code=code).model_dump(),
+            detail=_safe_error_detail(code, exc),
         ) from exc
+
+
+# Generic per-code messages used when DEBUG is off. Mirrors the operational
+# meaning of each ErrorCode in app/models.py — vague enough that we don't
+# leak internal hostnames / paths / tokenizer model names back to clients,
+# specific enough that the caller can decide whether to retry vs. surface
+# the failure to the end user. The full exception is still in our logs via
+# log.exception at every call site.
+_SAFE_ERROR_MESSAGES: dict[str, str] = {
+    "EXTRACTION_FAILED": "Document extraction failed.",
+    "EMBEDDING_FAILED": "Embedding step failed.",
+    "SPARSE_EMBEDDING_FAILED": "Sparse embedding step failed.",
+    "QDRANT_WRITE_FAILED": "Vector store write failed.",
+    "S3_FETCH_FAILED": "S3 object fetch failed.",
+    "INVALID_REQUEST": "Invalid request.",
+    "PIPELINE_FAILED": "Indexing pipeline failed.",
+}
+
+
+def _safe_error_detail(code: str, exc: Exception) -> dict:
+    """Build the JSON body of an ``IngestError`` response without leaking
+    internal details unless ``DEBUG`` is on.
+
+    Production callers see a fixed per-code string (no hostnames, no paths,
+    no AWS request IDs). Operators flipping ``DEBUG=true`` get ``str(exc)``
+    for local triage. Logs always carry the full traceback regardless.
+    """
+    if settings.debug:
+        message = str(exc)
+    else:
+        message = _SAFE_ERROR_MESSAGES.get(code, "Internal error.")
+    return IngestError(error=message, code=code).model_dump()
 
 
 def _classify_pipeline_error(exc: Exception) -> str:

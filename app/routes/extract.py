@@ -25,7 +25,7 @@ from app.auth import verify_api_key
 from app.config import settings as global_settings
 from app.models import ExtractedDocument, ExtractResponse, IngestError
 from app.pipelines.converters import build_converter
-from app.routes.ingest import stream_upload_to_tempfile
+from app.routes.ingest import _safe_error_detail, stream_upload_to_tempfile
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +124,8 @@ def _run_converter(file_path: str, engine: str | None) -> list:
         return result["documents"]
     except ImportError as exc:
         # Optional dep not installed (docling-haystack / unstructured-fileconverter-haystack).
+        # The ImportError message names the missing package — that's user-actionable
+        # configuration info, not an internal-state leak, so reflect it as-is.
         raise HTTPException(
             status_code=400,
             detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
@@ -137,5 +139,5 @@ def _run_converter(file_path: str, engine: str | None) -> list:
         )
         raise HTTPException(
             status_code=500,
-            detail=IngestError(error=str(exc), code="EXTRACTION_FAILED").model_dump(),
+            detail=_safe_error_detail("EXTRACTION_FAILED", exc),
         ) from exc

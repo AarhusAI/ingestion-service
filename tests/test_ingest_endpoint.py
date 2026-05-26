@@ -107,9 +107,10 @@ async def test_unsupported_content_type(client, api_headers):
 
 
 async def test_s3_fetch_failure_maps_to_s3_fetch_failed(client, api_headers):
+    """Without DEBUG, exception text is redacted; only the code is informative."""
     with patch(
         "app.routes.ingest.fetch_object_to_tempfile",
-        side_effect=RuntimeError("connection refused"),
+        side_effect=RuntimeError("connection refused to internal-host.local:9000"),
     ):
         response = await client.put(
             "/api/v1/ingest",
@@ -126,6 +127,36 @@ async def test_s3_fetch_failure_maps_to_s3_fetch_failed(client, api_headers):
     assert response.status_code == 500
     detail = response.json()["detail"]
     assert detail["code"] == "S3_FETCH_FAILED"
+    # Generic message; no internal hostname leak.
+    assert "internal-host.local" not in detail["error"]
+    assert detail["error"] == "S3 object fetch failed."
+
+
+async def test_error_detail_reflects_exc_when_debug(client, api_headers, monkeypatch):
+    """With DEBUG=True, str(exc) is reflected for operator triage."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "debug", True)
+
+    with patch(
+        "app.routes.ingest.fetch_object_to_tempfile",
+        side_effect=RuntimeError("connection refused to internal-host.local:9000"),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "missing.pdf",
+                "file_id": "abc",
+                "filename": "missing.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+    detail = response.json()["detail"]
+    assert detail["code"] == "S3_FETCH_FAILED"
+    assert "internal-host.local" in detail["error"]
 
 
 async def test_pipeline_failure_maps_to_classified_error(client, api_headers, tmp_path):
