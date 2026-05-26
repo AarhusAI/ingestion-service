@@ -10,6 +10,129 @@ Called by Open WebUI when `EXTERNAL_INGESTION_ENGINE=external`. The Open WebUI p
 delegates to `PUT /api/v1/ingest` with either an S3 reference (preferred) or a multipart
 file upload.
 
+## How Ingestion Works
+
+The service is a thin FastAPI shell around a Haystack v2 pipeline. FastAPI handles
+transport, auth, and the temp-file lifecycle; the pipeline does the actual work
+(extract → chunk → embed → write). The pipeline is built once at lifespan startup
+and cached as module-level state — Haystack pipelines aren't cheap to construct and
+the sparse embedder downloads its model on first warm-up.
+
+### System Context
+
+Where the service sits in the broader stack and what it talks to:
+
+```mermaid
+flowchart LR
+  OWB["Open WebUI<br/>(EXTERNAL_INGESTION_ENGINE=external)"]
+  ING["ingestion-service<br/>PUT /api/v1/ingest"]
+  S3[("S3 / MinIO<br/>raw files")]
+  SIDE["Tika / Kreuzberg<br/>extraction sidecar"]
+  EMB["Embedding endpoint<br/>(embed.itkdev.dk, TEI, or in-process fastembed)"]
+  QD[("Qdrant<br/>dense + optional sparse vectors")]
+
+  OWB -->|"JSON {bucket, key}<br/>or multipart"| ING
+  ING -->|fetch by key| S3
+  ING -->|HTTP extract| SIDE
+  ING -->|HTTP embed| EMB
+  ING -->|write points| QD
+```
+
+Open WebUI uploads the raw file to S3/MinIO first, then calls `PUT /api/v1/ingest`
+with the bucket + key. The multipart fallback exists for direct uploads but the
+S3 path is preferred — it keeps large files off the FastAPI worker's heap.
+
+### Pipeline DAG
+
+What happens to the file once the route handler hands it off to
+`run_indexing_pipeline()`:
+
+```mermaid
+flowchart LR
+  F["Local file<br/>(tempfile)"] --> C["Converter<br/>EXTRACTION_ENGINE"]
+  C -->|Documents| S["Splitter<br/>CHUNK_SPLIT_BY"]
+  S -->|Chunks + meta| DE["Dense embedder<br/>EMBEDDING_PROVIDER"]
+  DE -.optional.-> SE["Sparse embedder<br/>ENABLE_SPARSE_EMBEDDINGS"]
+  DE --> W["Writer<br/>QdrantDocumentStore"]
+  SE --> W
+  W --> QD[("Qdrant")]
+
+  classDef optional stroke-dasharray:5 5;
+  class SE optional;
+```
+
+Each stage, in order:
+
+- **Converter** (`app/pipelines/converters.py`) — turns the raw file into one or
+  more Haystack `Document` objects. Factory dispatches on `EXTRACTION_ENGINE`:
+  `tika` and `kreuzberg` are HTTP sidecars, `pypdf` is in-process,
+  `docling` / `unstructured` require optional deps. Kreuzberg uses a custom
+  Haystack component (`app/pipelines/kreuzberg_converter.py`) that additionally
+  surfaces document-level metadata (title, authors, languages) and renders
+  embedded tables as Markdown.
+
+- **Splitter** (`app/pipelines/splitter.py`) — slices documents into chunks.
+  Three factory branches selected by `CHUNK_SPLIT_BY`: `HuggingFaceTokenizerSplitter`
+  (token mode, default — measures chunk size in the embedding model's actual
+  tokens), `MarkdownChunker` (markdown mode — splits on heading hierarchy first,
+  then token-packs sections; attaches `meta.headers` breadcrumb), or Haystack's
+  built-in `DocumentSplitter` (word / sentence / passage modes). All branches
+  attach `meta.split_id` (sequential chunk index within the file).
+
+- **Dense embedder** (`app/pipelines/embedders.py`) — turns each chunk's text
+  into a fixed-size vector. Required. Three providers selected by
+  `EMBEDDING_PROVIDER`: `openai-compat` (HTTP, the current `embed.itkdev.dk`
+  path), `fastembed` (in-process), `tei` (HTTP, OpenAI-compatible wire format).
+  Applies `EMBEDDING_PREFIX_DOC` to each chunk before embedding so e5/nomic
+  models get the prefix they were trained on.
+
+- **Sparse embedder** (optional, `app/pipelines/embedders.py`) — when
+  `ENABLE_SPARSE_EMBEDDINGS=true`, adds a second named vector per chunk
+  (BM42 / SPLADE family via fastembed). Lets the retrieval agent use Qdrant's
+  native RRF hybrid query at search time instead of client-side BM25. Skipped
+  entirely when disabled — the writer sees dense-only chunks.
+
+- **Writer** — `DocumentWriter` backed by `QdrantDocumentStore`. Writes the
+  dense vector (and the sparse vector when enabled) as named vectors on a single
+  Qdrant point per chunk. Multitenancy HNSW is configured at the store layer
+  (`hnsw_config={"m": 0, "payload_m": 16}`) and the per-tenant subgraph key is
+  `meta.collection_name`; its keyword payload index is created by
+  `app/services/qdrant_setup.py` at startup.
+
+### Idempotency
+
+Before the pipeline runs, `_delete_existing_by_file_id()` removes any existing
+Qdrant points whose `meta.file_id` matches the incoming request (when
+`overwrite=true`, which is the default). If the pipeline throws at any stage,
+the same delete runs again as teardown. The contract for callers is:
+
+- A `status: true` response means the file is fully indexed (all chunks
+  written, all vectors present).
+- Any other outcome means the file's chunks are absent from Qdrant — partial
+  writes don't leak through.
+- Retries with the same `file_id` are safe; no duplicate vectors.
+
+Open WebUI's reindex action depends on this contract.
+
+### Code Tour
+
+Where to start reading when you need to change something:
+
+| File | What lives there |
+|---|---|
+| `app/main.py` | FastAPI app, lifespan, health endpoints |
+| `app/routes/ingest.py` | `PUT /api/v1/ingest` — auth, content-type dispatch, temp-file lifecycle, error code mapping |
+| `app/routes/extract.py` | `POST /api/v1/extract` — developer-facing extraction probe |
+| `app/pipelines/indexing.py` | Pipeline DAG construction, idempotency, exception teardown |
+| `app/pipelines/converters.py` | Converter factory (`EXTRACTION_ENGINE` dispatch) |
+| `app/pipelines/kreuzberg_converter.py` | Custom Haystack component for the Kreuzberg HTTP sidecar |
+| `app/pipelines/splitter.py` | Splitter factory + custom HF tokenizer / Markdown chunkers |
+| `app/pipelines/embedders.py` | Dense (required) + sparse (optional) embedder factories |
+| `app/services/qdrant_setup.py` | Payload-index bootstrap (`collection_name`, `collection_type`, `languages`) |
+| `app/services/s3.py` | S3 fetch for JSON-mode ingest requests |
+| `app/config.py` | pydantic-settings env binding (single source of truth for config) |
+| `app/models.py` | Request / response Pydantic schemas |
+
 ## Requirements
 
 - Docker and Docker Compose
@@ -70,14 +193,17 @@ docker compose exec ingestion pytest tests/test_ingest_endpoint.py::test_json_mo
 ### Production Image
 
 ```shell
-task build:image              # build + push to ghcr.io/aarhusai/ingestion-service:latest
-task build:image TAG=v1.0.0   # with specific tag
+task build:image                              # build + push multi-arch (linux/amd64 + linux/arm64) to ghcr.io/aarhusai/ingestion-service:latest
+task build:image TAG=v1.0.0                   # with specific tag
+task build:image PLATFORMS=linux/amd64        # single-arch (skips QEMU emulation; much faster for local iteration)
 ```
+
+First run will create a buildx builder (`ingestion-service-builder`) and register QEMU binfmt handlers for cross-arch emulation — idempotent, no-op on subsequent runs.
 
 ## Health Endpoints
 
 - `GET /health` — liveness probe (always 200 if the process is running)
-- `GET /health/ready` — readiness probe (verifies Qdrant connectivity, returns 503 if unreachable)
+- `GET /health/ready` — readiness probe. Returns 503 until the Haystack pipeline has finished warming up (the sparse embedder pulls its model from HuggingFace on first boot — ~80 MB) **and** Qdrant is reachable. This keeps Docker / Kubernetes from routing traffic during cold start.
 
 ## API
 
@@ -220,10 +346,14 @@ because they are **contracts with other services**:
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
   so chunks respect the model's context window — important for e5-large's
-  512-token cap once the `passage: ` prefix is prepended. `word`, `sentence`,
-  and `passage` delegate to Haystack's built-in `DocumentSplitter` and count
-  in those units instead. Token mode uses `TOKENIZER_MODEL` if set, otherwise
-  falls back to `EMBEDDING_MODEL`.
+  512-token cap once the `passage: ` prefix is prepended. `markdown` mode is
+  structure-aware: it splits on Markdown headings (`#`, `##`, `###`) first,
+  then token-packs each section that exceeds `CHUNK_SIZE`, and writes the
+  heading breadcrumb to `meta.headers` on each chunk — most useful when the
+  converter emits Markdown (Docling natively, Kreuzberg with table rendering).
+  `word`, `sentence`, and `passage` delegate to Haystack's built-in
+  `DocumentSplitter` and count in those units instead. Token and markdown
+  modes use `TOKENIZER_MODEL` if set, otherwise fall back to `EMBEDDING_MODEL`.
 
 ## Supported Embedding Models
 

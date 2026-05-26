@@ -31,7 +31,7 @@ FastAPI app wired in `app/main.py` (lifespan, health probes, router include). En
 
 - **`PUT /api/v1/ingest`** — defined in `app/routes/ingest.py`. Bearer-token auth via `API_KEY` (`app/auth.py`). Single handler dispatches on `Content-Type`: `application/json` validates against `IngestRequestJSON` and fetches the file from S3, `multipart/form-data` streams the body to a tempfile. Both modes converge on `run_indexing_pipeline()`.
 - **`GET /health`** — liveness probe (always 200 if the process is running).
-- **`GET /health/ready`** — readiness probe (verifies Qdrant connectivity, returns 503 if unreachable).
+- **`GET /health/ready`** — readiness probe. Returns 503 until `init_pipeline()` has finished (the sparse embedder downloads ~80 MB from HuggingFace on first boot) **and** Qdrant is reachable. The pipeline-warm gate is what keeps Docker / Kubernetes from routing traffic during cold start.
 
 ### Pipeline (`app/pipelines/indexing.py`)
 
