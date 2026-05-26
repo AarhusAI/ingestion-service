@@ -19,6 +19,9 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 
+__all__ = ["fetch_object_to_tempfile", "reset_client", "S3ObjectTooLarge"]
+
+
 @lru_cache(maxsize=1)
 def _client() -> BaseClient:
     """Lazily build the boto3 S3 client. Cached for the process lifetime."""
@@ -33,13 +36,38 @@ def _client() -> BaseClient:
     )
 
 
+class S3ObjectTooLarge(Exception):
+    """Raised when the S3 object's reported size exceeds ``max_upload_bytes``.
+
+    Separate from the generic download path so the route layer can map it to
+    HTTP 413 (rather than the 500 / S3_FETCH_FAILED bucket all other S3 errors
+    fall into).
+    """
+
+
 def fetch_object_to_tempfile(bucket: str, key: str) -> str:
     """Download an S3 object to a NamedTemporaryFile. Returns the local path.
 
     Caller is responsible for ``os.unlink()`` on the returned path.
-    Raises on transport / 404 / auth errors.
+    Raises ``S3ObjectTooLarge`` if the object's ``ContentLength`` exceeds
+    ``settings.max_upload_bytes``; raises on transport / 404 / auth errors
+    otherwise.
     """
     log.info("s3 fetch: bucket=%s key=%s", bucket, key)
+
+    # head_object before download so we don't stream a multi-GB object onto
+    # local disk just to reject it. ContentLength is authoritative when the
+    # bucket isn't using chunked / unknown-length uploads — which is the
+    # normal case for Open WebUI's file storage.
+    head = _client().head_object(Bucket=bucket, Key=key)
+    size = head.get("ContentLength")
+    max_bytes = settings.max_upload_bytes
+    if isinstance(size, int) and size > max_bytes:
+        raise S3ObjectTooLarge(
+            f"S3 object size={size} exceeds max_upload_bytes={max_bytes} "
+            f"(bucket={bucket} key={key})"
+        )
+
     # delete=False is intentional — caller owns the file's lifetime and unlinks it
     # after the pipeline runs. Using a `with` block here would delete the file
     # before the pipeline can open it.

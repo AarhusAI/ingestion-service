@@ -185,6 +185,67 @@ class _OpenAIError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Upload size cap (see Finding 3 in sec.md). Both the multipart file part
+# and the S3 ContentLength must be capped at settings.max_upload_bytes.
+# ---------------------------------------------------------------------------
+
+
+async def test_multipart_oversize_rejected_with_413(client, api_headers, monkeypatch):
+    """Multipart file part larger than max_upload_bytes returns 413, doesn't run pipeline."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_bytes", 1024)  # 1 KB cap for the test
+
+    files = {"file": ("big.pdf", BytesIO(b"A" * 5_000), "application/pdf")}
+    data = {
+        "file_id": "abc",
+        "filename": "big.pdf",
+        "collection_name": "file-abc",
+        "collection_type": "file",
+        "user_id": "u-1",
+    }
+
+    with patch("app.routes.ingest.run_indexing_pipeline") as run_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_s3_oversize_rejected_with_413(client, api_headers, monkeypatch):
+    """S3 object with ContentLength > max_upload_bytes returns 413 before download."""
+    from app.config import settings
+    from app.services.s3 import S3ObjectTooLarge
+
+    monkeypatch.setattr(settings, "max_upload_bytes", 1024)
+
+    with (
+        patch(
+            "app.routes.ingest.fetch_object_to_tempfile",
+            side_effect=S3ObjectTooLarge("S3 object size=9999 exceeds max_upload_bytes=1024"),
+        ),
+        patch("app.routes.ingest.run_indexing_pipeline") as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "big.pdf",
+                "file_id": "abc",
+                "filename": "big.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Collection-name binding (defense in depth — see Finding 2 in sec.md).
 # ---------------------------------------------------------------------------
 

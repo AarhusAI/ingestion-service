@@ -32,6 +32,7 @@ services:
       # Auth
       API_KEY: "${API_KEY:?API_KEY must be set in .env or .env.local}"
       DEBUG: ${DEBUG:-false}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
       # Extraction
       EXTRACTION_ENGINE: ${EXTRACTION_ENGINE:-tika}
       TIKA_URL: ${TIKA_URL:-http://tika:9998}

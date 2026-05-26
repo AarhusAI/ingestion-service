@@ -21,9 +21,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
 from app.auth import verify_api_key
+from app.config import settings
 from app.models import IngestError, IngestRequestJSON, IngestResponse
 from app.pipelines.indexing import run_indexing_pipeline
-from app.services.s3 import fetch_object_to_tempfile
+from app.services.s3 import S3ObjectTooLarge, fetch_object_to_tempfile
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ router = APIRouter()
     response_model=IngestResponse,
     responses={
         400: {"model": IngestError},
+        413: {"model": IngestError},
         415: {"model": IngestError},
         500: {"model": IngestError},
     },
@@ -89,6 +91,12 @@ async def ingest(
 def _fetch_from_s3(bucket: str, key: str) -> str:
     try:
         return fetch_object_to_tempfile(bucket=bucket, key=key)
+    except S3ObjectTooLarge as exc:
+        log.warning("S3 fetch rejected (too large) for s3://%s/%s: %s", bucket, key, exc)
+        raise HTTPException(
+            status_code=413,
+            detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
+        ) from exc
     except Exception as exc:
         log.exception("S3 fetch failed for s3://%s/%s", bucket, key)
         raise HTTPException(
@@ -105,6 +113,10 @@ async def stream_upload_to_tempfile(upload) -> str:
     ``upload`` is non-None — presence checks live in the route handlers so
     this helper stays HTTP-agnostic and reusable across routes (currently
     ``/api/v1/ingest`` and ``/api/v1/extract``).
+
+    Enforces ``settings.max_upload_bytes`` — Starlette's ``max_part_size``
+    only caps non-file form fields, so file uploads are otherwise unbounded
+    and a single request can fill ``/tmp``.
     """
     suffix = ""
     if upload.filename and "." in upload.filename:
@@ -114,12 +126,31 @@ async def stream_upload_to_tempfile(upload) -> str:
     # and unlinks it after the pipeline runs. Using a `with` block here would close
     # and delete the file before the pipeline can read it.
     fh = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)  # noqa: SIM115
+    written = 0
+    max_bytes = settings.max_upload_bytes
     try:
         while chunk := await upload.read(1024 * 1024):
+            written += len(chunk)
+            if written > max_bytes:
+                # Unlink the partial file before raising — finally only closes.
+                fh.close()
+                with contextlib.suppress(OSError):
+                    os.unlink(fh.name)
+                raise HTTPException(
+                    status_code=413,
+                    detail=IngestError(
+                        error=(
+                            f"upload exceeds max_upload_bytes={max_bytes} "
+                            "(configure via MAX_UPLOAD_BYTES)"
+                        ),
+                        code="INVALID_REQUEST",
+                    ).model_dump(),
+                )
             fh.write(chunk)
         fh.flush()
     finally:
-        fh.close()
+        if not fh.closed:
+            fh.close()
     return fh.name
 
 

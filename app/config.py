@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
+    # Per-request upload size cap, in bytes. Applies to the multipart file
+    # part (enforced by stream_upload_to_tempfile) and to S3 fetches
+    # (enforced by a head_object size check). Default 100 MB — large enough
+    # for typical PDFs/DOCX, small enough that an authenticated caller can't
+    # flood /tmp.
+    max_upload_bytes: int = 100 * 1024 * 1024
+
     # ----- Extraction -----
     # tika | pypdf | docling | unstructured | kreuzberg
     # tika/kreuzberg run as external HTTP sidecars; the rest are in-process.
