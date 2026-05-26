@@ -10,7 +10,7 @@ from app.pipelines.splitter import build_splitter
 
 def _settings(**overrides) -> Settings:
     base = {
-        "api_key": "k",
+        "api_key": "test-api-key-padded-to-min-length-x",
         "embedding_api_base_url": "http://fake:8080",
         "embedding_api_key": "k",
         "embedding_model": "intfloat/multilingual-e5-large",

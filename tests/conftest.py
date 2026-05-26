@@ -15,6 +15,10 @@ os.environ["EXTRACTION_ENGINE"] = "tika"
 os.environ["S3_ENDPOINT_URL"] = "http://fake-s3:9000"
 os.environ["S3_ACCESS_KEY_ID"] = "fake-key"
 os.environ["S3_SECRET_ACCESS_KEY"] = "fake-secret"
+# Pin DEBUG off so error-redaction tests are independent of whatever the dev
+# container's .env carries (operators flipping DEBUG=True locally shouldn't
+# flip test expectations).
+os.environ["DEBUG"] = "False"
 
 import pytest
 from httpx import ASGITransport, AsyncClient

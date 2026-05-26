@@ -12,11 +12,13 @@ dependencies = [
     "haystack-ai>=2.10.0",
     "qdrant-haystack>=8.0.0",
     "fastembed-haystack>=1.5.0",
-    # NB: Haystack's TikaDocumentConverter talks to the Tika sidecar over
-    # HTTP and does not need the in-process ``tika`` Python package (which
-    # historically auto-downloads the Tika JAR at first call). Don't add
-    # the ``tika`` package back unless something switches to JAR-mode —
-    # see sec.md Finding 12.
+    # NB: Haystack's TikaDocumentConverter requires the ``tika`` Python
+    # package even when talking only to a remote sidecar — it uses
+    # ``tika.parser.from_buffer(serverEndpoint=...)`` as its HTTP client
+    # and ``__init__`` eagerly calls ``tika_import.check()``. The package
+    # only auto-downloads the JAR if you actually invoke local-mode APIs,
+    # which we don't. See sec.md Finding 12.
+    "tika>=2.6.0",                  # TikaDocumentConverter required dep (HTTP client wrapper)
     "pypdf>=4.0",                   # PyPDFToDocument optional dep
     "qdrant-client>=1.12.0,<3.0",
     "boto3>=1.35.0",
