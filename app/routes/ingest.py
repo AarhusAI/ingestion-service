@@ -335,15 +335,83 @@ def _safe_error_detail(code: str, exc: Exception) -> dict:
 
 
 def _classify_pipeline_error(exc: Exception) -> str:
-    """Best-effort classification. Falls back to PIPELINE_FAILED."""
-    msg = str(exc).lower()
-    name = type(exc).__name__
-    if "tika" in msg or "extract" in msg or "converter" in msg or "PyPDFError" in name:
+    """Map a pipeline exception to an ``IngestError.code``.
+
+    Dispatch order:
+    1. Our own typed errors (``ExtractionError`` etc. from
+       ``app.pipelines.errors``) — preferred, used by components we control.
+    2. Known third-party exception classes via lazy ``isinstance`` checks —
+       covers pypdf, openai, and qdrant_client failures accurately.
+    3. Substring matching on the message — best-effort fallback for
+       Haystack-internal failures that surface as generic ``Exception``.
+
+    The previous implementation matched ``"PyPDFError" in name`` and
+    ``"OpenAI" in name``, neither of which corresponds to a real exception
+    class (pypdf uses ``PdfReadError`` / ``PyPdfError`` base; openai 1.x
+    uses ``APIError`` and subclasses). Both branches silently fell through
+    to ``PIPELINE_FAILED``, mis-labeling the two most common real-world
+    failure modes (PDF parse errors, embedding-endpoint outages). See
+    sec.md Finding 5.
+    """
+    from app.pipelines.errors import (
+        EmbeddingError,
+        ExtractionError,
+        QdrantWriteError,
+        SparseEmbeddingError,
+    )
+
+    # 1. Typed errors from components we control.
+    if isinstance(exc, ExtractionError):
         return "EXTRACTION_FAILED"
+    if isinstance(exc, SparseEmbeddingError):
+        return "SPARSE_EMBEDDING_FAILED"
+    if isinstance(exc, EmbeddingError):
+        return "EMBEDDING_FAILED"
+    if isinstance(exc, QdrantWriteError):
+        return "QDRANT_WRITE_FAILED"
+
+    # 2. Known library exception types (lazy-imported so a missing optional
+    #    dep can't break the classifier).
+    if _is_pypdf_error(exc):
+        return "EXTRACTION_FAILED"
+    if _is_qdrant_error(exc):
+        return "QDRANT_WRITE_FAILED"
+    if _is_openai_error(exc):
+        return "EMBEDDING_FAILED"
+
+    # 3. Substring fallback. Sparse must be checked before the generic
+    #    embed branch, otherwise sparse failures get mis-labeled.
+    msg = str(exc).lower()
+    if "sparse" in msg and "embed" in msg:
+        return "SPARSE_EMBEDDING_FAILED"
     if "qdrant" in msg or "vector store" in msg or ("vector" in msg and "write" in msg):
         return "QDRANT_WRITE_FAILED"
-    if "embed" in msg and "sparse" in msg:
-        return "SPARSE_EMBEDDING_FAILED"
-    if "embed" in msg or "OpenAI" in name:
+    if "embed" in msg:
         return "EMBEDDING_FAILED"
+    if "tika" in msg or "extract" in msg or "converter" in msg:
+        return "EXTRACTION_FAILED"
     return "PIPELINE_FAILED"
+
+
+def _is_pypdf_error(exc: Exception) -> bool:
+    try:
+        from pypdf.errors import PyPdfError
+    except ImportError:
+        return False
+    return isinstance(exc, PyPdfError)
+
+
+def _is_openai_error(exc: Exception) -> bool:
+    try:
+        from openai import OpenAIError
+    except ImportError:
+        return False
+    return isinstance(exc, OpenAIError)
+
+
+def _is_qdrant_error(exc: Exception) -> bool:
+    try:
+        from qdrant_client.http.exceptions import UnexpectedResponse
+    except ImportError:
+        return False
+    return isinstance(exc, UnexpectedResponse)

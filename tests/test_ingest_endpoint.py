@@ -207,12 +207,9 @@ def test_form_bool_passes_through_bool():
     assert _form_bool(False) is False
 
 
-class _PyPDFError(Exception):
-    """Stand-in for the pypdf converter exception (name-match branch)."""
-
-
-class _OpenAIError(Exception):
-    """Stand-in for an embedder exception with 'OpenAI' in the class name."""
+# (The previous _PyPDFError / _OpenAIError stand-ins were removed alongside
+# the substring-name classifier. Real pypdf / openai classes are now used
+# directly in the typed-dispatch tests below.)
 
 
 # ---------------------------------------------------------------------------
@@ -492,27 +489,68 @@ async def test_knowledge_collection_passes_through(client, api_headers, tmp_path
     assert response.status_code == 200
 
 
+def test_classify_dispatches_on_typed_errors():
+    """Typed errors from app.pipelines.errors win over message-substring matching."""
+    from app.pipelines.errors import (
+        EmbeddingError,
+        ExtractionError,
+        QdrantWriteError,
+        SparseEmbeddingError,
+    )
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert _classify_pipeline_error(ExtractionError("any text")) == "EXTRACTION_FAILED"
+    assert _classify_pipeline_error(EmbeddingError("any text")) == "EMBEDDING_FAILED"
+    assert (
+        _classify_pipeline_error(SparseEmbeddingError("any text"))
+        == "SPARSE_EMBEDDING_FAILED"
+    )
+    assert _classify_pipeline_error(QdrantWriteError("any text")) == "QDRANT_WRITE_FAILED"
+
+
+def test_classify_dispatches_on_pypdf_real_class():
+    """Real pypdf exception → EXTRACTION_FAILED (regression for sec.md Finding 5).
+
+    The old classifier checked ``"PyPDFError" in name`` which never matched
+    pypdf's actual class (``PdfReadError``)."""
+    pypdf_errors = pytest.importorskip("pypdf.errors")
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert (
+        _classify_pipeline_error(pypdf_errors.PdfReadError("bad page tree"))
+        == "EXTRACTION_FAILED"
+    )
+
+
+def test_classify_dispatches_on_openai_real_class():
+    """Real openai exception → EMBEDDING_FAILED (regression for sec.md Finding 5).
+
+    The old classifier checked ``"OpenAI" in name`` which never matched real
+    openai exception classes (``APIConnectionError``, ``RateLimitError``)."""
+    openai = pytest.importorskip("openai")
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert _classify_pipeline_error(openai.OpenAIError("rate limited")) == "EMBEDDING_FAILED"
+
+
 @pytest.mark.parametrize(
     "exc, expected",
     [
-        # Extraction: matched by message keyword OR exception class name.
+        # Substring fallback for Haystack-internal failures that surface
+        # as generic Exception with descriptive messages.
         (RuntimeError("Tika converter timeout"), "EXTRACTION_FAILED"),
         (RuntimeError("could not extract pages"), "EXTRACTION_FAILED"),
-        (_PyPDFError("malformed page tree"), "EXTRACTION_FAILED"),
-        # Qdrant: 'qdrant' or 'vector store' (or 'vector' + 'write').
         (RuntimeError("qdrant write failed"), "QDRANT_WRITE_FAILED"),
         (RuntimeError("vector store unreachable"), "QDRANT_WRITE_FAILED"),
-        # Sparse stage must be checked before the generic embed branch.
+        # Sparse must beat the generic embed branch.
         (RuntimeError("sparse embed call failed"), "SPARSE_EMBEDDING_FAILED"),
-        # Generic embed by message OR by OpenAI-named exception class.
         (RuntimeError("embed endpoint returned 500"), "EMBEDDING_FAILED"),
-        (_OpenAIError("opaque server error"), "EMBEDDING_FAILED"),
         # Fallback.
         (RuntimeError("nothing recognizable here"), "PIPELINE_FAILED"),
     ],
 )
-def test_classify_pipeline_error(exc, expected):
-    """Heuristic mapping from a raised exception → `IngestError.code`."""
+def test_classify_pipeline_error_substring_fallback(exc, expected):
+    """Substring matching catches Haystack-internal failures."""
     from app.routes.ingest import _classify_pipeline_error
 
     assert _classify_pipeline_error(exc) == expected

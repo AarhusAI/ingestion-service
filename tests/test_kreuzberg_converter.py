@@ -133,26 +133,28 @@ def test_run_uses_files_field_name(tmp_source):
 
 
 @respx.mock
-def test_run_http_error_maps_to_runtime_error(tmp_source):
-    """Connection refused (sidecar down) becomes a RuntimeError whose message
-    contains "kreuzberg" / "extract" — that's what the route-layer error
-    heuristic (``_classify_pipeline_error``) keys off to map to
-    EXTRACTION_FAILED."""
+def test_run_http_error_raises_extraction_error(tmp_source):
+    """Connection refused (sidecar down) becomes an ``ExtractionError`` — the
+    typed error the route-layer classifier dispatches on (sec.md Finding 5)."""
+    from app.pipelines.errors import ExtractionError
+
     respx.post("http://fake-kreuzberg:8000/extract").mock(
         side_effect=httpx.ConnectError("connection refused")
     )
 
     c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
-    with pytest.raises(RuntimeError, match="kreuzberg extract failed"):
+    with pytest.raises(ExtractionError, match="kreuzberg extract failed"):
         c.run(sources=[tmp_source])
 
 
 @respx.mock
-def test_run_5xx_maps_to_runtime_error(tmp_source):
+def test_run_5xx_raises_extraction_error(tmp_source):
+    from app.pipelines.errors import ExtractionError
+
     respx.post("http://fake-kreuzberg:8000/extract").respond(500, text="boom")
 
     c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
-    with pytest.raises(RuntimeError, match="kreuzberg extract failed"):
+    with pytest.raises(ExtractionError, match="kreuzberg extract failed"):
         c.run(sources=[tmp_source])
 
 

@@ -23,6 +23,8 @@ from pathlib import Path
 import httpx
 from haystack import Document, component
 
+from app.pipelines.errors import ExtractionError
+
 log = logging.getLogger(__name__)
 
 
@@ -90,10 +92,13 @@ class KreuzbergRemoteConverter:
                     resp = httpx.post(self._url, files=files, timeout=self._timeout)
                 resp.raise_for_status()
             except httpx.HTTPError as exc:
-                # Re-raised as plain RuntimeError so the route-layer heuristic
-                # in ``_classify_pipeline_error`` catches "kreuzberg" / "extract"
-                # and maps to EXTRACTION_FAILED.
-                raise RuntimeError(f"kreuzberg extract failed for {path.name}: {exc}") from exc
+                # Typed so the route-layer classifier dispatches on isinstance
+                # rather than substring-matching the message — substring matches
+                # were fragile (the old classifier missed real pypdf/openai
+                # class names entirely; see sec.md Finding 5).
+                raise ExtractionError(
+                    f"kreuzberg extract failed for {path.name}: {exc}"
+                ) from exc
 
             payload = resp.json()
             content = _content_from_payload(payload)
