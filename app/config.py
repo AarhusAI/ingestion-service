@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # Minimum length enforced on ``API_KEY``. The bearer is a shared static
@@ -7,6 +7,15 @@ from pydantic_settings import BaseSettings
 # (not in Settings) so the value is referenced from the validator without
 # a self-reference cycle.
 API_KEY_MIN_LENGTH = 32
+
+# Concrete extraction engines the factory (``app/pipelines/converters.py``)
+# knows how to build. ``"auto"`` is NOT in here — it is a routing *mode*, not a
+# converter, so the auto-mode validator below must resolve the router's
+# default/diagram engines against this set. Kept here (not in Settings) so both
+# the validator and the factory can reference one source of truth.
+KNOWN_EXTRACTION_ENGINES = frozenset(
+    {"tika", "pypdf", "docling", "unstructured", "kreuzberg", "vision-llm"}
+)
 
 
 class Settings(BaseSettings):
@@ -39,6 +48,8 @@ class Settings(BaseSettings):
     @field_validator(
         "tika_url",
         "kreuzberg_url",
+        "vision_llm_api_base_url",
+        "gotenberg_url",
         "qdrant_uri",
         "embedding_api_base_url",
         "s3_endpoint_url",
@@ -50,6 +61,26 @@ class Settings(BaseSettings):
         if not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError(f"URL must start with http:// or https://; got {v!r}")
         return v
+
+    # ----- Routing engine-name validator -----
+    # When routing is on (extraction_engine="auto"), the router's default and
+    # diagram engines are real converters that get built at startup — so a typo
+    # like extraction_router_diagram_engine="vsion-llm" must fail fast here, not
+    # at the first diagram document. The route layer's _SUPPORTED_ENGINES only
+    # gates /extract overrides; this is the only place that validates the
+    # routing engine names.
+    @model_validator(mode="after")
+    def _validate_routing_engines(self):
+        if self.extraction_engine.lower() != "auto":
+            return self
+        for field in ("extraction_router_default", "extraction_router_diagram_engine"):
+            value = getattr(self, field).lower()
+            if value not in KNOWN_EXTRACTION_ENGINES:
+                raise ValueError(
+                    f"{field}={getattr(self, field)!r} is not a known extraction engine "
+                    f"(one of: {' | '.join(sorted(KNOWN_EXTRACTION_ENGINES))})"
+                )
+        return self
 
     # ----- Server -----
     host: str = "0.0.0.0"
@@ -64,9 +95,14 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 100 * 1024 * 1024
 
     # ----- Extraction -----
-    # tika | pypdf | docling | unstructured | kreuzberg
+    # tika | pypdf | docling | unstructured | kreuzberg | vision-llm | auto
     # tika/kreuzberg run as external HTTP sidecars; the rest are in-process.
     # docling/unstructured require optional deps not bundled by default.
+    # vision-llm renders pages and reconstructs structure via a multimodal LLM.
+    # "auto" enables per-document routing (see app/pipelines/detectors.py +
+    # routing_converter.py): drawing-heavy docx go to the diagram engine, the
+    # rest to the router default. Any other value pins that single engine
+    # (current behaviour — routing OFF).
     extraction_engine: str = "tika"
     tika_url: str = "http://tika:9998"
     kreuzberg_url: str = "http://kreuzberg:8000"
@@ -82,6 +118,57 @@ class Settings(BaseSettings):
     # verification with verify=False. Default True; set to false only with
     # full awareness.
     kreuzberg_tls_verify: bool = True
+
+    # ----- Content-based routing (EXTRACTION_ENGINE=auto) -----
+    # Only consulted when extraction_engine == "auto". Defaults keep the
+    # cheap-default contract (tika for ordinary docs) while sending
+    # drawing-heavy docx (swim-lane flowcharts etc.) to the vision engine.
+    extraction_router_default: str = "tika"
+    extraction_router_diagram_engine: str = "vision-llm"
+    # Detection thresholds (tunable per deployment without a code change).
+    # An absolute floor on the number of drawing/textbox text-bearing shapes
+    # so a couple of callout boxes in an otherwise normal document can't
+    # trigger the expensive engine.
+    extraction_router_min_textboxes: int = 20
+    # Drawing/textbox text must be at least this many times the body word
+    # count for a docx to route to the diagram engine: ratio = drawing /
+    # (body + 1).
+    extraction_router_drawing_ratio: float = 2.0
+
+    # ----- Vision LLM extraction (EXTRACTION_ENGINE=vision-llm) -----
+    # Renders document pages to images and asks an OpenAI-compatible
+    # multimodal endpoint to reconstruct the structure as Markdown + Mermaid.
+    # Model id is operator-configured so the code stays model-agnostic; the
+    # served model today is a 4-bit (NVFP4) Gemma. Office->PDF rendering is
+    # delegated to the Gotenberg sidecar (below); PDF->PNG is local.
+    vision_llm_api_base_url: str = ""
+    vision_llm_api_key: str = ""
+    vision_llm_model: str = "gemma4-nvfp4"
+    vision_llm_connect_timeout: float = 5.0
+    # Long read window: a quantized VLM reasoning over several page images is
+    # slow. Connect still fails fast (a stalled endpoint shouldn't tie up a
+    # worker for the whole read window).
+    vision_llm_read_timeout: float = 180.0
+    # Render resolution and a hard page cap. Higher dpi = more legible but more
+    # image tokens; max_pages bounds reconstruction-quality drift and cost on
+    # long documents.
+    vision_llm_dpi: int = 150
+    vision_llm_max_pages: int = 20
+    vision_llm_tls_verify: bool = True
+    # Injected into the system prompt so the model keeps the document's source
+    # language verbatim instead of translating.
+    vision_llm_language_hint: str = "Danish"
+
+    # ----- Document rendering (Gotenberg sidecar) -----
+    # External container that converts office formats (docx/odt/rtf/pptx/...)
+    # to PDF via headless LibreOffice. Same deployment model as the tika /
+    # kreuzberg sidecars — keeps LibreOffice (and its cold start / profile
+    # locks) out of this service's image. Used by the vision-llm engine.
+    gotenberg_url: str = "http://gotenberg:3000"
+    gotenberg_connect_timeout: float = 5.0
+    # LibreOffice conversion is the slow part, so the read window is generous.
+    gotenberg_read_timeout: float = 120.0
+    gotenberg_tls_verify: bool = True
 
     # ----- Chunking -----
     # token mode measures chunk size with the embedding model's HuggingFace

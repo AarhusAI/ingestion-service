@@ -48,10 +48,32 @@ def test_build_converter_override_kreuzberg():
     assert type(c).__name__ == "KreuzbergRemoteConverter"
 
 
+def test_build_converter_vision_llm():
+    s = _settings(extraction_engine="vision-llm", vision_llm_api_base_url="http://vlm:8080/v1")
+    c = build_converter(s)
+    assert type(c).__name__ == "VisionLLMConverter"
+
+
 def test_build_converter_unknown():
     s = _settings(extraction_engine="banana")
     with pytest.raises(ValueError, match="Unknown EXTRACTION_ENGINE"):
         build_converter(s)
+
+
+def test_build_converter_for_pipeline_auto_returns_router():
+    from app.pipelines.indexing import _build_converter_for_pipeline
+
+    s = _settings(extraction_engine="auto", vision_llm_api_base_url="http://vlm:8080/v1")
+    c = _build_converter_for_pipeline(s)
+    assert type(c).__name__ == "RoutingConverter"
+
+
+def test_build_converter_for_pipeline_concrete_engine():
+    from app.pipelines.indexing import _build_converter_for_pipeline
+
+    s = _settings(extraction_engine="tika")
+    c = _build_converter_for_pipeline(s)
+    assert type(c).__name__ == "TikaDocumentConverter"
 
 
 def test_build_converter_override_takes_precedence():

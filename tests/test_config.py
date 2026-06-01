@@ -22,6 +22,8 @@ _BASE = {
     [
         "tika_url",
         "kreuzberg_url",
+        "vision_llm_api_base_url",
+        "gotenberg_url",
         "qdrant_uri",
         "embedding_api_base_url",
         "s3_endpoint_url",
@@ -39,6 +41,8 @@ def test_url_validator_rejects_bad_scheme(field):
     [
         "tika_url",
         "kreuzberg_url",
+        "vision_llm_api_base_url",
+        "gotenberg_url",
         "qdrant_uri",
         "embedding_api_base_url",
     ],
@@ -60,3 +64,36 @@ def test_url_validator_rejects_missing_scheme():
     """Bare hostnames without a scheme are rejected (no implicit http://)."""
     with pytest.raises(ValidationError, match="http://"):
         Settings(_env_file=None, **{**_BASE, "tika_url": "tika:9998"})
+
+
+# ----- Routing engine-name validator (EXTRACTION_ENGINE=auto) -----
+
+
+def test_auto_mode_accepts_known_router_engines():
+    """auto mode with the default tika/vision-llm engines validates fine."""
+    Settings(_env_file=None, **{**_BASE, "extraction_engine": "auto"})
+
+
+def test_auto_mode_rejects_unknown_diagram_engine():
+    with pytest.raises(ValidationError, match="not a known extraction engine"):
+        Settings(
+            _env_file=None,
+            **{**_BASE, "extraction_engine": "auto", "extraction_router_diagram_engine": "banana"},
+        )
+
+
+def test_auto_mode_rejects_unknown_default_engine():
+    with pytest.raises(ValidationError, match="not a known extraction engine"):
+        Settings(
+            _env_file=None,
+            **{**_BASE, "extraction_engine": "auto", "extraction_router_default": "banana"},
+        )
+
+
+def test_non_auto_mode_skips_router_engine_validation():
+    """Router engine names are only validated in auto mode — a stale/unknown
+    value is tolerated when routing is off (the field is simply unused)."""
+    Settings(
+        _env_file=None,
+        **{**_BASE, "extraction_engine": "tika", "extraction_router_diagram_engine": "banana"},
+    )

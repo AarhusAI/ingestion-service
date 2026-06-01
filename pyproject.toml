@@ -28,6 +28,11 @@ dependencies = [
     # context window (e5-large 512, bge-m3 8k, etc.).
     "transformers>=4.40",
     "langchain-text-splitters>=0.3",
+    # vision-llm engine: render PDF pages to images locally. pypdfium2 bundles
+    # its own pdfium (no system poppler/libreoffice); office->PDF is delegated
+    # to the Gotenberg sidecar over httpx. Pillow encodes the rendered pages.
+    "pypdfium2>=4.0",
+    "pillow>=10.0",
 ]
 
 [project.optional-dependencies]
