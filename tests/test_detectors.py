@@ -4,6 +4,7 @@ Builds minimal in-memory ``.docx`` zips and asserts the routing decision. No
 real Word, no network.
 """
 
+import logging
 import zipfile
 
 from app.config import Settings
@@ -11,7 +12,12 @@ from app.pipelines.detectors import detect_engine
 
 
 def _settings(**overrides) -> Settings:
-    return Settings(_env_file=None, api_key="a" * 32, **overrides)
+    # Pin the diagram engine explicitly so these detection tests assert the
+    # engine they configure, independent of the code/router default (which is
+    # hybrid-diagram). Overridable per test.
+    base = {"extraction_router_diagram_engine": "vision-llm"}
+    base.update(overrides)
+    return Settings(_env_file=None, api_key="a" * 32, **base)
 
 
 def _write_docx(tmp_path, document_xml, *, app_words=None, name="f.docx"):
@@ -88,6 +94,15 @@ def test_missing_app_xml_uses_body_word_fallback(tmp_path):
     )
     src = _write_docx(tmp_path, xml, app_words=None)
     assert detect_engine(src, _settings()) == "vision-llm"
+
+
+def test_debug_logs_routing_signal(tmp_path, caplog):
+    xml = f"<w:document><w:body>{_textboxes(50)}</w:body></w:document>"
+    src = _write_docx(tmp_path, xml, app_words=5, name="Diagram.docx")
+    with caplog.at_level(logging.DEBUG, logger="app.pipelines.detectors"):
+        detect_engine(src, _settings())
+    assert "docx routing Diagram.docx: textboxes=50 body_words=5 ratio=8.33" in caplog.text
+    assert "-> vision-llm" in caplog.text
 
 
 def test_malformed_zip_returns_none(tmp_path):

@@ -133,6 +133,16 @@ class Settings(BaseSettings):
     # vision_llm_profile (the engine's own default) so changing the engine
     # default for forced/explicit use can't alter what auto-routing sends for
     # flowcharts. Validated against the profile registry at startup.
+    #
+    # NOTE: with the default diagram engine (hybrid-diagram) this is mostly
+    # moot — for a real (text-bearing) docx the hybrid converter pins its own
+    # `diagram-topology` profile and ignores this value. It still applies in
+    # two narrow cases: (a) the hybrid fallback for a diagram-detected docx with
+    # ~no native text, and (b) when extraction_router_diagram_engine=vision-llm,
+    # where it fully selects the auto-routed flowchart profile (diagram/general/
+    # ocr). Kept for (b): dropping it would force that path onto vision_llm_profile
+    # (default "general", wrong for flowcharts), reintroducing the coupling the
+    # separate pin avoids.
     extraction_router_diagram_profile: str = "diagram"
     # Detection thresholds (tunable per deployment without a code change).
     # An absolute floor on the number of drawing/textbox text-bearing shapes

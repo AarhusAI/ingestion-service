@@ -4,6 +4,7 @@ The inner vision converter and the native docx extractor are patched at the
 module symbol, so no rendering / VLM endpoint / real docx is touched.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 from haystack import Document
@@ -114,6 +115,23 @@ def test_docx_with_too_little_native_text_falls_back_to_full_vision():
     assert kwargs["profile"] == "diagram"
     assert "grounding" not in kwargs
     assert out[0].content == "full vision markdown"
+
+
+def test_debug_logs_grounded_branch(caplog):
+    vision = _vision()
+    with (
+        patch.object(hdc, "extract_docx_lines", return_value=["A", "B", "C"]),
+        caplog.at_level(logging.DEBUG, logger="app.pipelines.hybrid_diagram_converter"),
+    ):
+        _build(vision).run(sources=["Diagram.docx"], meta=None)
+    assert "hybrid Diagram.docx: native_lines=3 -> grounded diagram-topology" in caplog.text
+
+
+def test_debug_logs_fallback_branch_for_non_docx(caplog):
+    vision = _vision(content="x", meta={})
+    with caplog.at_level(logging.DEBUG, logger="app.pipelines.hybrid_diagram_converter"):
+        _build(vision).run(sources=["scan.pdf"], meta=None)
+    assert "hybrid scan.pdf: non-docx -> delegate full-vision" in caplog.text
 
 
 def test_warm_up_fans_out_to_inner_vision():

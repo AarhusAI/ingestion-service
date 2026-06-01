@@ -388,3 +388,16 @@ because they are **contracts with other services**:
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
 | `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred Mermaid graph. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
 | `auto` | day-one | Per-document routing: drawing-heavy `.docx` → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`), everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
+
+**`EXTRACTION_ROUTER_DIAGRAM_PROFILE`.** With the default diagram engine (`hybrid-diagram`)
+this is mostly moot — for a real docx the hybrid path pins its own `diagram-topology`
+profile. It only applies to hybrid's empty-docx fallback, or when you set
+`EXTRACTION_ROUTER_DIAGRAM_ENGINE=vision-llm` (where it picks `diagram`/`general`/`ocr` for
+auto-routed flowcharts, independent of the engine's own `VISION_LLM_PROFILE` default).
+
+**Seeing what `auto` chose.** The `/extract` response echoes the `engine` and `profile`
+used, and every chunk written to Qdrant carries `meta.extractor` / `meta.vision_profile`.
+For the `/ingest` path (Open WebUI's normal flow), set **`DEBUG=true`** to log the
+per-document routing decision — the detector signal (`textboxes`/`body_words`/`ratio`),
+the chosen `engine=… profile=…`, and the hybrid/vision branch — visible in the container
+logs (`docker logs <ingestion-container>`).

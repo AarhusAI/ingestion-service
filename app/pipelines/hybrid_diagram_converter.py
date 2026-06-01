@@ -39,6 +39,7 @@ from pathlib import Path
 from haystack import Document, component
 
 from app.config import Settings
+from app.log_utils import sanitize_for_log
 from app.pipelines.converters import build_converter
 from app.pipelines.docx_text import extract_docx_lines
 
@@ -91,17 +92,27 @@ class HybridDiagramConverter:
         fallback_profile = profile or _DEFAULT_FALLBACK_PROFILE
         docs: list[Document] = []
         for i, source in enumerate(sources):
+            name = sanitize_for_log(Path(source).name)
             source_meta = _meta_for(meta, i)
-            lines = (
-                extract_docx_lines(source)
-                if Path(source).suffix.lower() == ".docx"
-                else []
-            )
+            is_docx = Path(source).suffix.lower() == ".docx"
+            lines = extract_docx_lines(source) if is_docx else []
             if len(lines) >= _MIN_NATIVE_LINES:
+                log.debug(
+                    "hybrid %s: native_lines=%d -> grounded %s",
+                    name,
+                    len(lines),
+                    _TOPOLOGY_PROFILE,
+                )
                 docs.append(self._hybrid_document(source, lines, source_meta))
             else:
                 # No authoritative native text — let the vision model do the
                 # whole job (full transcription, not just topology).
+                reason = (
+                    f"native_lines={len(lines)} < {_MIN_NATIVE_LINES}" if is_docx else "non-docx"
+                )
+                log.debug(
+                    "hybrid %s: %s -> delegate full-vision (%s)", name, reason, fallback_profile
+                )
                 result = self._vision.run(
                     sources=[source], meta=source_meta, profile=fallback_profile
                 )

@@ -24,6 +24,7 @@ import zipfile
 from pathlib import Path
 
 from app.config import Settings
+from app.log_utils import sanitize_for_log
 
 log = logging.getLogger(__name__)
 
@@ -68,12 +69,34 @@ def _detect_docx(source: str, settings: Settings) -> str | None:
         log.debug("docx routing analysis failed for %s: %s", Path(source).name, exc)
         return None
 
+    name = Path(source).name
     drawing_text_units = sum(document_xml.count(tag) for tag in _TEXTBOX_TAGS)
     if drawing_text_units < settings.extraction_router_min_textboxes:
+        log.debug(
+            "docx routing %s: textboxes=%d < min=%d -> default",
+            sanitize_for_log(name),
+            drawing_text_units,
+            settings.extraction_router_min_textboxes,
+        )
         return None
 
     body_words = _body_word_count(document_xml, app_xml)
     ratio = drawing_text_units / (body_words + 1)
+    decision = (
+        settings.extraction_router_diagram_engine
+        if ratio >= settings.extraction_router_drawing_ratio
+        else "default"
+    )
+    log.debug(
+        "docx routing %s: textboxes=%d body_words=%d ratio=%.2f (min=%d drawing_ratio=%.2f) -> %s",
+        sanitize_for_log(name),
+        drawing_text_units,
+        body_words,
+        ratio,
+        settings.extraction_router_min_textboxes,
+        settings.extraction_router_drawing_ratio,
+        decision,
+    )
     if ratio >= settings.extraction_router_drawing_ratio:
         return settings.extraction_router_diagram_engine
     return None

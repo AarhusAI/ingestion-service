@@ -29,6 +29,7 @@ from pathlib import Path
 import httpx
 from haystack import Document, component
 
+from app.log_utils import sanitize_for_log
 from app.pipelines.errors import ExtractionError
 from app.pipelines.rendering import render_to_pngs
 from app.pipelines.vision_profiles import KNOWN_PROFILES, get_profile
@@ -126,6 +127,13 @@ class VisionLLMConverter:
                 verify=self._gotenberg_tls_verify,
             )
 
+            log.debug(
+                "vision %s: profile=%s pages=%d grounded=%s",
+                sanitize_for_log(path.name),
+                profile_name,
+                len(images),
+                bool(grounding and grounding.strip()),
+            )
             content = self._reconstruct(images, path.name, profile_name, grounding)
             doc_meta = {
                 "extractor": "vision-llm",

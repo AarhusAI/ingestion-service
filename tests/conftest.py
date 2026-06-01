@@ -12,6 +12,15 @@ os.environ["KREUZBERG_URL"] = "http://fake-kreuzberg:8000"
 # whatever the live container is configured with (operators flipping
 # EXTRACTION_ENGINE=kreuzberg shouldn't break tests that assert on defaults).
 os.environ["EXTRACTION_ENGINE"] = "tika"
+# Same reasoning for the routing knobs: a deployment that sets these in its .env
+# (e.g. EXTRACTION_ROUTER_DIAGRAM_ENGINE=hybrid-diagram) must not leak into tests
+# that build Settings(_env_file=None) — pydantic still reads os.environ. Pin them
+# to the code defaults so routing/detector tests are deterministic.
+os.environ["EXTRACTION_ROUTER_DEFAULT"] = "tika"
+os.environ["EXTRACTION_ROUTER_DIAGRAM_ENGINE"] = "hybrid-diagram"
+os.environ["EXTRACTION_ROUTER_DIAGRAM_PROFILE"] = "diagram"
+os.environ["EXTRACTION_ROUTER_MIN_TEXTBOXES"] = "20"
+os.environ["EXTRACTION_ROUTER_DRAWING_RATIO"] = "2.0"
 os.environ["S3_ENDPOINT_URL"] = "http://fake-s3:9000"
 os.environ["S3_ACCESS_KEY_ID"] = "fake-key"
 os.environ["S3_SECRET_ACCESS_KEY"] = "fake-secret"

@@ -16,6 +16,7 @@ Active only when ``EXTRACTION_ENGINE=auto``; otherwise the pipeline uses
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from haystack import Document, component
 
@@ -39,6 +40,10 @@ class RoutingConverter:
         # Profile the diagram route uses — pinned independently of the engine's
         # own default (VISION_LLM_PROFILE) so an operator who sets that to
         # ocr/general for forced use can't corrupt the auto-diagram route.
+        # NOTE: the default diagram engine (hybrid-diagram) ignores this on its
+        # main docx path — it pins `diagram-topology` itself. This value only
+        # bites for hybrid's empty-docx fallback or when the diagram engine is
+        # set to vision-llm. We still pass it; the converter decides what to do.
         self._diagram_profile = settings.extraction_router_diagram_profile
         if self._diagram_profile not in KNOWN_PROFILES:
             raise ValueError(
@@ -79,7 +84,16 @@ class RoutingConverter:
             source_meta = _meta_for(meta, i)
             # The diagram route pins the diagram profile; pass it only to a
             # profile-aware converter (a non-vision default engine never gets it).
-            if engine == self._diagram_engine and getattr(converter, "accepts_profile", False):
+            pinned_profile = (
+                engine == self._diagram_engine and getattr(converter, "accepts_profile", False)
+            )
+            log.debug(
+                "routing %s -> engine=%s profile=%s",
+                sanitize_for_log(Path(source).name),
+                engine,
+                self._diagram_profile if pinned_profile else "-",
+            )
+            if pinned_profile:
                 result = converter.run(
                     sources=[source], meta=source_meta, profile=self._diagram_profile
                 )

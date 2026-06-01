@@ -4,6 +4,7 @@
 real converter is constructed and the routing decision is forced per test.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +23,9 @@ def _settings(**overrides) -> Settings:
         "extraction_engine": "auto",
         "extraction_router_default": "tika",
         "extraction_router_diagram_engine": "vision-llm",
+        # Pin the profile too — the diagram-profile assertions must not inherit a
+        # deployment's EXTRACTION_ROUTER_DIAGRAM_PROFILE (e.g. diagram-topology).
+        "extraction_router_diagram_profile": "diagram",
     }
     base.update(overrides)
     return Settings(_env_file=None, **base)
@@ -228,6 +232,18 @@ def test_profile_not_passed_to_non_profile_aware_diagram_engine():
 
     _, kwargs = plain.run.call_args
     assert "profile" not in kwargs
+
+
+def test_debug_logs_routing_decision(caplog):
+    _tika, _vision, build = _fakes()
+    with (
+        patch.object(rc, "build_converter", side_effect=build),
+        patch.object(rc, "detect_engine", return_value="vision-llm"),
+        caplog.at_level(logging.DEBUG, logger="app.pipelines.routing_converter"),
+    ):
+        rc.RoutingConverter(_settings()).run(sources=["Diagram.docx"], meta={})
+
+    assert "routing Diagram.docx -> engine=vision-llm profile=diagram" in caplog.text
 
 
 def test_invalid_diagram_profile_raises_at_construction():
