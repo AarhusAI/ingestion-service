@@ -23,6 +23,7 @@ from app.config import Settings
 from app.log_utils import sanitize_for_log
 from app.pipelines.converters import build_converter
 from app.pipelines.detectors import detect_engine
+from app.pipelines.vision_profiles import KNOWN_PROFILES
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,15 @@ class RoutingConverter:
         self._settings = settings
         self._default_engine = settings.extraction_router_default.lower()
         self._diagram_engine = settings.extraction_router_diagram_engine.lower()
+        # Profile the diagram route uses — pinned independently of the engine's
+        # own default (VISION_LLM_PROFILE) so an operator who sets that to
+        # ocr/general for forced use can't corrupt the auto-diagram route.
+        self._diagram_profile = settings.extraction_router_diagram_profile
+        if self._diagram_profile not in KNOWN_PROFILES:
+            raise ValueError(
+                f"EXTRACTION_ROUTER_DIAGRAM_PROFILE={self._diagram_profile!r} is not a known "
+                f"profile (one of: {' | '.join(sorted(KNOWN_PROFILES))})"
+            )
         # Build every engine we might route to up front. A misconfigured /
         # undeployable engine (e.g. an optional dep missing) therefore surfaces
         # at startup, not at the first matching document.
@@ -66,7 +76,15 @@ class RoutingConverter:
         for i, source in enumerate(sources):
             engine = self._select_engine(source)
             converter = self._converters.get(engine) or self._converters[self._default_engine]
-            result = converter.run(sources=[source], meta=_meta_for(meta, i))
+            source_meta = _meta_for(meta, i)
+            # The diagram route pins the diagram profile; pass it only to a
+            # profile-aware converter (a non-vision default engine never gets it).
+            if engine == self._diagram_engine and getattr(converter, "accepts_profile", False):
+                result = converter.run(
+                    sources=[source], meta=source_meta, profile=self._diagram_profile
+                )
+            else:
+                result = converter.run(sources=[source], meta=source_meta)
             docs.extend(result.get("documents", []))
         return {"documents": docs}
 

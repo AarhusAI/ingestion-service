@@ -89,13 +89,24 @@ def build_converter(settings: Settings, engine_override: str | None = None):
             max_pages=settings.vision_llm_max_pages,
             tls_verify=settings.vision_llm_tls_verify,
             language_hint=settings.vision_llm_language_hint,
+            default_profile=settings.vision_llm_profile,
             gotenberg_url=settings.gotenberg_url,
             gotenberg_connect_timeout=settings.gotenberg_connect_timeout,
             gotenberg_read_timeout=settings.gotenberg_read_timeout,
             gotenberg_tls_verify=settings.gotenberg_tls_verify,
         )
 
+    if engine == "hybrid-diagram":
+        # Native docx text (authoritative labels) + a vision-inferred Mermaid
+        # diagram. Wraps the vision-llm engine, so it carries the same config /
+        # dep surface and no extra env vars. Used as the auto-router's diagram
+        # engine; also selectable directly for forced use.
+        from app.pipelines.hybrid_diagram_converter import HybridDiagramConverter
+
+        return HybridDiagramConverter(settings)
+
     raise ValueError(
         f"Unknown EXTRACTION_ENGINE={engine!r} "
-        "(supported: tika | pypdf | docling | unstructured | kreuzberg | vision-llm)"
+        "(supported: tika | pypdf | docling | unstructured | kreuzberg | "
+        "vision-llm | hybrid-diagram)"
     )

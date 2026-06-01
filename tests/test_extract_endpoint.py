@@ -124,6 +124,56 @@ async def test_extract_auto_is_rejected(client, api_headers):
     assert response.json()["detail"]["code"] == "INVALID_REQUEST"
 
 
+async def test_extract_profile_forwarded_for_vision_llm(client, api_headers):
+    fake_converter = MagicMock()
+    fake_converter.accepts_profile = True
+    fake_converter.run.return_value = {
+        "documents": [_fake_doc("# md", {"vision_profile": "ocr"})],
+    }
+    with patch("app.routes.extract.build_converter", return_value=fake_converter):
+        response = await client.post(
+            "/api/v1/extract",
+            files={"file": ("a.pdf", BytesIO(b"%PDF-fake"), "application/pdf")},
+            data={"engine": "vision-llm", "profile": "ocr"},
+            headers=api_headers,
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profile"] == "ocr"
+    _, run_kwargs = fake_converter.run.call_args
+    assert run_kwargs.get("profile") == "ocr"
+
+
+async def test_extract_unknown_profile_returns_400(client, api_headers):
+    response = await client.post(
+        "/api/v1/extract",
+        files={"file": ("a.pdf", BytesIO(b"%PDF-fake"), "application/pdf")},
+        data={"engine": "vision-llm", "profile": "banana"},
+        headers=api_headers,
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "INVALID_REQUEST"
+    assert "banana" in detail["error"]
+
+
+async def test_extract_profile_with_non_vision_engine_returns_400(client, api_headers):
+    fake_converter = MagicMock()
+    fake_converter.accepts_profile = False
+    fake_converter.run.return_value = {"documents": [_fake_doc("ok")]}
+    with patch("app.routes.extract.build_converter", return_value=fake_converter):
+        response = await client.post(
+            "/api/v1/extract",
+            files={"file": ("a.pdf", BytesIO(b"%PDF-fake"), "application/pdf")},
+            data={"engine": "tika", "profile": "ocr"},
+            headers=api_headers,
+        )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "INVALID_REQUEST"
+    assert "vision-llm" in detail["error"]
+
+
 async def test_extract_missing_file_returns_400(client, api_headers):
     # Multipart request body, but no ``file`` field — only ``engine``.
     response = await client.post(

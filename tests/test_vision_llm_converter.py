@@ -63,7 +63,101 @@ def test_meta_none_yields_only_converter_meta():
         patch(_POST, return_value=_ok_response()),
     ):
         out = _conv().run(sources=["f.docx"], meta=None)["documents"]
-    assert out[0].meta == {"extractor": "vision-llm", "page_count": 1}
+    assert out[0].meta == {
+        "extractor": "vision-llm",
+        "vision_profile": "general",
+        "page_count": 1,
+    }
+
+
+def _system_text(post_mock) -> str:
+    _, kwargs = post_mock.call_args
+    return kwargs["json"]["messages"][0]["content"]
+
+
+def test_default_profile_used_when_none_given():
+    # _conv() defaults to "general" — its system prompt is transcription-flavoured.
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response()) as post,
+    ):
+        out = _conv().run(sources=["f.docx"], meta=None)["documents"]
+    assert out[0].meta["vision_profile"] == "general"
+    assert "transcri" in _system_text(post).lower()
+
+
+def test_explicit_profile_selects_that_prompt():
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response()) as post,
+    ):
+        out = _conv().run(sources=["f.docx"], meta=None, profile="diagram")["documents"]
+    assert out[0].meta["vision_profile"] == "diagram"
+    assert "swim-lane" in _system_text(post).lower()
+
+
+def test_unknown_default_profile_raises_at_construction():
+    with pytest.raises(ValueError, match="not a known profile"):
+        _conv(default_profile="banana")
+
+
+def test_unknown_run_profile_falls_back_to_default():
+    # Defensive: an unknown profile at run() must not crash; it uses the default.
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response()) as post,
+    ):
+        out = _conv(default_profile="ocr").run(
+            sources=["f.docx"], meta=None, profile="banana"
+        )["documents"]
+    assert out[0].meta["vision_profile"] == "ocr"
+    assert "ocr" in _system_text(post).lower() or "scan" in _system_text(post).lower()
+
+
+def _user_text_parts(post_mock) -> list[str]:
+    _, kwargs = post_mock.call_args
+    content = kwargs["json"]["messages"][1]["content"]
+    return [p["text"] for p in content if p["type"] == "text"]
+
+
+def test_grounding_adds_one_user_text_part_before_images():
+    with (
+        patch(_RENDER, return_value=[b"png1", b"png2"]),
+        patch(_POST, return_value=_ok_response()) as post,
+    ):
+        _conv().run(
+            sources=["f.docx"],
+            meta=None,
+            profile="diagram-topology",
+            grounding="Sagsvurdering\n- Statusattest",
+        )
+    _, kwargs = post.call_args
+    content = kwargs["json"]["messages"][1]["content"]
+    types = [p["type"] for p in content]
+    # prompt text, then the grounding text, then the images — grounding precedes images.
+    assert types == ["text", "text", "image_url", "image_url"]
+    grounding_part = content[1]["text"]
+    assert "AUTHORITATIVE TEXT" in grounding_part
+    assert "Sagsvurdering\n- Statusattest" in grounding_part
+
+
+def test_no_grounding_leaves_payload_unchanged():
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response()) as post,
+    ):
+        _conv().run(sources=["f.docx"], meta=None)
+    # Exactly one text part (the profile prompt) and one image — no grounding part.
+    assert len(_user_text_parts(post)) == 1
+
+
+def test_blank_grounding_is_ignored():
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response()) as post,
+    ):
+        _conv().run(sources=["f.docx"], meta=None, grounding="   ")
+    assert len(_user_text_parts(post)) == 1
 
 
 def test_http_error_raises_extraction_error():

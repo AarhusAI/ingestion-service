@@ -14,7 +14,7 @@ API_KEY_MIN_LENGTH = 32
 # default/diagram engines against this set. Kept here (not in Settings) so both
 # the validator and the factory can reference one source of truth.
 KNOWN_EXTRACTION_ENGINES = frozenset(
-    {"tika", "pypdf", "docling", "unstructured", "kreuzberg", "vision-llm"}
+    {"tika", "pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram"}
 )
 
 
@@ -124,7 +124,16 @@ class Settings(BaseSettings):
     # cheap-default contract (tika for ordinary docs) while sending
     # drawing-heavy docx (swim-lane flowcharts etc.) to the vision engine.
     extraction_router_default: str = "tika"
-    extraction_router_diagram_engine: str = "vision-llm"
+    # hybrid-diagram = native docx text (authoritative, complete labels) + a
+    # vision-inferred Mermaid graph. Preferred over bare vision-llm for the
+    # diagram route because the body text is verbatim from the package XML
+    # instead of OCR-guessed; vision-llm stays available for forced use.
+    extraction_router_diagram_engine: str = "hybrid-diagram"
+    # Vision-LLM profile the diagram route uses. Pinned separately from
+    # vision_llm_profile (the engine's own default) so changing the engine
+    # default for forced/explicit use can't alter what auto-routing sends for
+    # flowcharts. Validated against the profile registry at startup.
+    extraction_router_diagram_profile: str = "diagram"
     # Detection thresholds (tunable per deployment without a code change).
     # An absolute floor on the number of drawing/textbox text-bearing shapes
     # so a couple of callout boxes in an otherwise normal document can't
@@ -158,6 +167,12 @@ class Settings(BaseSettings):
     # Injected into the system prompt so the model keeps the document's source
     # language verbatim instead of translating.
     vision_llm_language_hint: str = "Danish"
+    # The engine's default prompt profile (diagram | general | ocr), used for
+    # forced/explicit vision-llm use (EXTRACTION_ENGINE=vision-llm or
+    # /extract?engine=vision-llm without ?profile=). NOT what auto-routing uses
+    # for flowcharts — that is extraction_router_diagram_profile. Validated
+    # against the profile registry at startup.
+    vision_llm_profile: str = "general"
 
     # ----- Document rendering (Gotenberg sidecar) -----
     # External container that converts office formats (docx/odt/rtf/pptx/...)

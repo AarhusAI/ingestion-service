@@ -69,7 +69,10 @@ Each stage, in order:
   `docling` / `unstructured` require optional deps. Kreuzberg uses a custom
   Haystack component (`app/pipelines/kreuzberg_converter.py`) that additionally
   surfaces document-level metadata (title, authors, languages) and renders
-  embedded tables as Markdown.
+  embedded tables as Markdown. `vision-llm` renders pages and reconstructs
+  layout-bound documents (flowcharts, scans) via a multimodal LLM; `hybrid-diagram`
+  pairs native docx text with a vision-inferred Mermaid graph. See
+  [Extraction Engines](#extraction-engines).
 
 - **Splitter** (`app/pipelines/splitter.py`) — slices documents into chunks.
   Three factory branches selected by `CHUNK_SPLIT_BY`: `HuggingFaceTokenizerSplitter`
@@ -382,3 +385,6 @@ because they are **contracts with other services**:
 | `kreuzberg` | day-one | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
+| `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
+| `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred Mermaid graph. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
+| `auto` | day-one | Per-document routing: drawing-heavy `.docx` → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`), everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |

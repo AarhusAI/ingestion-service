@@ -54,6 +54,26 @@ def test_build_converter_vision_llm():
     assert type(c).__name__ == "VisionLLMConverter"
 
 
+def test_build_converter_vision_llm_threads_profile():
+    s = _settings(
+        extraction_engine="vision-llm",
+        vision_llm_api_base_url="http://vlm:8080/v1",
+        vision_llm_profile="ocr",
+    )
+    c = build_converter(s)
+    assert c._default_profile == "ocr"
+
+
+def test_build_converter_vision_llm_invalid_profile_raises():
+    s = _settings(
+        extraction_engine="vision-llm",
+        vision_llm_api_base_url="http://vlm:8080/v1",
+        vision_llm_profile="banana",
+    )
+    with pytest.raises(ValueError, match="not a known profile"):
+        build_converter(s)
+
+
 def test_build_converter_unknown():
     s = _settings(extraction_engine="banana")
     with pytest.raises(ValueError, match="Unknown EXTRACTION_ENGINE"):
