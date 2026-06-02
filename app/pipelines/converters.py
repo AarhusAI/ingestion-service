@@ -70,6 +70,7 @@ def build_converter(settings: Settings, engine_override: str | None = None):
             connect_timeout=settings.kreuzberg_connect_timeout,
             read_timeout=settings.kreuzberg_read_timeout,
             verify=settings.kreuzberg_tls_verify,
+            min_table_columns=settings.kreuzberg_min_table_columns,
         )
 
     if engine == "vision-llm":

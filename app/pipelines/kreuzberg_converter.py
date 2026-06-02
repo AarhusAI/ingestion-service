@@ -70,8 +70,14 @@ class KreuzbergRemoteConverter:
         connect_timeout: float = 5.0,
         read_timeout: float = 60.0,
         verify: bool = True,
+        min_table_columns: int = 2,
     ):
         self._url = kreuzberg_url.rstrip("/") + "/extract"
+        # Minimum markdown columns a detected table must have to be appended. The
+        # sidecar's detector false-fires on multi-column prose and emits 1-column
+        # line-dumps that just duplicate the body; gate them out. See
+        # _render_tables_section. 1 = keep-all (the pre-gate behaviour).
+        self._min_table_columns = min_table_columns
         # Split timeout — connect fails fast so a stalled sidecar doesn't
         # tie up a worker for the full read window. Write/pool reuse the
         # connect value: nothing about the upload is read-shaped.
@@ -120,7 +126,7 @@ class KreuzbergRemoteConverter:
                 raise ExtractionError(f"kreuzberg extract failed for {path.name}: {exc}") from exc
 
             payload = resp.json()
-            content = _content_from_payload(payload)
+            content = _content_from_payload(payload, self._min_table_columns)
             doc_meta = _doc_meta_from_payload(payload)
             # Request meta is the contract with the route layer (file_id /
             # collection_name / user_id …) and must win on any collision.
@@ -139,7 +145,7 @@ def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:
     return dict(meta)
 
 
-def _content_from_payload(payload: object) -> str:
+def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
     """Build the chunk-source text from a Kreuzberg ``/extract`` response.
 
     The 4.0.x API returns a JSON **array** — one ``ExtractionResult`` per
@@ -149,11 +155,16 @@ def _content_from_payload(payload: object) -> str:
     - ``content`` — the body text. In tabular PDFs, Kreuzberg flattens
       tables into this string without whitespace (``"Sales100120135"`` etc.),
       so the body alone is lossy for any document with tables.
-    - ``tables`` — a separate array of structured tables, each with a
-      pre-rendered ``markdown`` field and a ``page_number``. We append
-      these as a ``## Tables`` Markdown section so they survive
-      downstream chunking + embedding. With ``CHUNK_SPLIT_BY=markdown``
-      each table lands in its own ``### Table N (page X)`` section.
+    - ``tables`` — a separate array of detected tables, each with a
+      pre-rendered ``markdown`` field and a ``page_number``. Genuinely
+      column-segmented tables are appended as a ``## Tables`` Markdown
+      section so they survive downstream chunking + embedding (with
+      ``CHUNK_SPLIT_BY=markdown`` each lands in its own ``### Table N`` section).
+      **Gated by ``min_table_columns``**: the 4.0.x detector false-fires on
+      multi-column PROSE and returns 1-column line-dumps (``cells`` carries no
+      row/col geometry, so even real tables can degenerate to one column) —
+      those merely duplicate the body, so we drop them. ``min_table_columns=1``
+      restores the pre-gate keep-all behaviour.
 
     Defensive against shape drift: accepts a bare object as well as the
     canonical array, and returns the empty string if nothing usable is
@@ -164,7 +175,7 @@ def _content_from_payload(payload: object) -> str:
         return ""
     body = result.get("content") if isinstance(result.get("content"), str) else ""
     tables = result.get("tables") if isinstance(result.get("tables"), list) else []
-    table_section = _render_tables_section(tables)
+    table_section = _render_tables_section(tables, min_table_columns)
     if table_section:
         return f"{body}\n\n{table_section}" if body else table_section
     return body
@@ -229,18 +240,25 @@ def _doc_meta_from_payload(payload: object) -> dict:
     return out
 
 
-def _render_tables_section(tables: list) -> str:
+def _render_tables_section(tables: list, min_columns: int = 2) -> str:
     """Render Kreuzberg's ``tables`` array as a Markdown section.
 
     Each table goes under a ``### Table N (page X)`` H3 inside a parent
     ``## Tables`` H2 so the structure-aware chunker (``CHUNK_SPLIT_BY=
     markdown``) gives each table its own chunk with a ``meta.headers``
-    breadcrumb. Tables missing the pre-rendered ``markdown`` field are
-    skipped (we don't render from ``cells`` ourselves — Kreuzberg already
-    knows how, and falling back would risk shape drift). Numbering is
-    monotonic across **successfully** rendered tables — a skipped table
-    doesn't leave a gap in the visible count. Returns the empty string
-    if nothing can be rendered, so we never emit an empty heading.
+    breadcrumb.
+
+    Tables are dropped when they are missing the pre-rendered ``markdown``
+    field (we don't render from ``cells`` ourselves — and in 4.0.x ``cells``
+    has no row/col geometry anyway), OR when the markdown has fewer than
+    ``min_columns`` columns or no data rows. The column gate is the load-bearing
+    one: the sidecar's detector false-fires on multi-column PROSE and emits
+    1-column line-dumps that merely duplicate the body, polluting the index.
+    ``min_columns=1`` keeps everything (the pre-gate behaviour).
+
+    Numbering is monotonic across **kept** tables — a dropped table doesn't
+    leave a gap. Returns the empty string if nothing survives, so we never emit
+    an empty heading.
     """
     blocks: list[str] = []
     counter = 0
@@ -249,6 +267,10 @@ def _render_tables_section(tables: list) -> str:
             continue
         md = table.get("markdown")
         if not isinstance(md, str) or not md.strip():
+            continue
+        cols, data_rows = _table_shape(md)
+        if cols < min_columns or data_rows < 1:
+            log.debug("kreuzberg: dropping degenerate table (cols=%d rows=%d)", cols, data_rows)
             continue
         counter += 1
         page = table.get("page_number")
@@ -260,3 +282,18 @@ def _render_tables_section(tables: list) -> str:
     if not blocks:
         return ""
     return "## Tables\n\n" + "\n\n".join(blocks)
+
+
+def _table_shape(md: str) -> tuple[int, int]:
+    """``(columns, data_rows)`` for a rendered Markdown table.
+
+    Read off the ``|---|---|`` separator row: column count is the number of
+    cells in it, data rows are the lines after it. Returns ``(0, 0)`` when the
+    markdown has no separator (not a real table), so the caller drops it.
+    """
+    lines = [ln.strip() for ln in md.splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        if "-" in line and set(line) <= set("|-: "):
+            cols = len([cell for cell in line.strip("|").split("|") if cell.strip()])
+            return cols, len(lines) - i - 1
+    return 0, 0

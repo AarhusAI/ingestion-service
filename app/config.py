@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     # verification with verify=False. Default True; set to false only with
     # full awareness.
     kreuzberg_tls_verify: bool = True
+    # Minimum columns a kreuzberg-detected table's rendered markdown must have to
+    # be appended as a ## Tables section. The 4.0.x detector false-fires on
+    # multi-column PROSE and emits 1-column line-dumps that just duplicate the body
+    # (cells carry no row/col geometry, so even real tables can degenerate to one
+    # column). Default 2 drops that duplication while keeping genuinely
+    # column-segmented tables. Set to 1 to restore keep-all behaviour.
+    kreuzberg_min_table_columns: int = 2
 
     # ----- Content-based routing (EXTRACTION_ENGINE=auto) -----
     # Only consulted when extraction_engine == "auto". Defaults keep the

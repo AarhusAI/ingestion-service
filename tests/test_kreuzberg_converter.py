@@ -279,7 +279,7 @@ def test_content_skips_table_without_markdown(tmp_source):
                 "content": "body",
                 "tables": [
                     {"cells": [["A", "B"]], "page_number": 1},  # no markdown → skip
-                    {"markdown": "| X | Y |\n| --- | --- |\n", "page_number": 5},
+                    {"markdown": "| X | Y |\n| --- | --- |\n| 1 | 2 |\n", "page_number": 5},
                 ],
             }
         ],
@@ -302,7 +302,7 @@ def test_content_table_without_page_number(tmp_source):
         json=[
             {
                 "content": "body",
-                "tables": [{"markdown": "| X | Y |\n| --- | --- |\n"}],
+                "tables": [{"markdown": "| X | Y |\n| --- | --- |\n| 1 | 2 |\n"}],
             }
         ],
     )
@@ -336,6 +336,75 @@ def test_content_no_tables_heading_when_all_invalid(tmp_source):
 
     assert out[0].content == "body"
     assert "## Tables" not in out[0].content
+
+
+@respx.mock
+def test_drops_single_column_table(tmp_source):
+    """The 4.0.x failure mode: a multi-row 1-column line-dump (prose mis-detected
+    as a table). Gated out by the default min_table_columns=2 → body only."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "the real body text",
+                "tables": [
+                    {
+                        "markdown": "| prose line one |\n| --- |\n| line two |\n| line three |\n",
+                        "page_number": 2,
+                    }
+                ],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert out[0].content == "the real body text"
+    assert "## Tables" not in out[0].content
+
+
+@respx.mock
+def test_drops_header_only_table(tmp_source):
+    """Two columns but no data rows (e.g. a split title) → dropped."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "tables": [{"markdown": "| A | B | C |\n| --- | --- | --- |\n", "page_number": 1}],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert "## Tables" not in out[0].content
+
+
+@respx.mock
+def test_min_columns_one_keeps_single_column(tmp_source):
+    """Escape hatch: min_table_columns=1 restores the pre-gate keep-all behaviour."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(
+        200,
+        json=[
+            {
+                "content": "body",
+                "tables": [
+                    {"markdown": "| only column |\n| --- |\n| a |\n| b |\n", "page_number": 3}
+                ],
+            }
+        ],
+    )
+
+    c = KreuzbergRemoteConverter(
+        kreuzberg_url="http://fake-kreuzberg:8000", min_table_columns=1
+    )
+    out = c.run(sources=[tmp_source])["documents"]
+
+    assert "## Tables" in out[0].content
+    assert "### Table 1 (page 3)" in out[0].content
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +562,9 @@ def test_content_tables_only_no_body(tmp_source):
         json=[
             {
                 "content": "",
-                "tables": [{"markdown": "| X | Y |\n", "page_number": 1}],
+                "tables": [
+                    {"markdown": "| X | Y |\n| --- | --- |\n| 1 | 2 |\n", "page_number": 1}
+                ],
             }
         ],
     )
