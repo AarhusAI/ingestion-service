@@ -23,9 +23,11 @@ def _conv(**overrides):
     return VisionLLMConverter(**base)
 
 
-def _ok_response(content="## Konsulent\n- step"):
+def _ok_response(content="## Konsulent\n- step", finish_reason="stop"):
     r = MagicMock()
-    r.json.return_value = {"choices": [{"message": {"content": content}}]}
+    r.json.return_value = {
+        "choices": [{"message": {"content": content}, "finish_reason": finish_reason}]
+    }
     r.raise_for_status.return_value = None
     return r
 
@@ -253,3 +255,41 @@ def test_empty_content_without_override_still_raises():
         pytest.raises(ExtractionError, match="empty content"),
     ):
         _conv().run(sources=["f.docx"], meta=None)
+
+
+def test_truncated_output_raises():
+    # finish_reason=length → hard failure even though partial content is present.
+    truncated = _ok_response("partial markdown cut off", finish_reason="length")
+    with (
+        patch(_RENDER, return_value=[b"png1", b"png2"]),
+        patch(_POST, return_value=truncated),
+        pytest.raises(ExtractionError, match="truncated"),
+    ):
+        _conv().run(sources=["f.docx"], meta=None)
+
+
+def test_truncated_output_raises_even_on_override_path():
+    # Truncation is distinct from allow_empty: a cut-off figure response is a failure.
+    with (
+        patch(_RENDER) as render,
+        patch(_POST, return_value=_ok_response("## Fig partial", finish_reason="length")),
+        pytest.raises(ExtractionError, match="truncated"),
+    ):
+        _conv().run(sources=["f.docx"], meta=None, profile="figure", images_override=[b"BLIP"])
+    render.assert_not_called()
+
+
+def test_max_tokens_default_and_configurable():
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response()) as post,
+    ):
+        _conv().run(sources=["f.docx"], meta=None)
+    assert post.call_args.kwargs["json"]["max_tokens"] == 16384
+
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response()) as post2,
+    ):
+        _conv(max_tokens=2048).run(sources=["f.docx"], meta=None)
+    assert post2.call_args.kwargs["json"]["max_tokens"] == 2048

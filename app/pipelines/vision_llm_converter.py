@@ -55,6 +55,7 @@ class VisionLLMConverter:
         read_timeout: float = 180.0,
         dpi: int = 150,
         max_pages: int = 20,
+        max_tokens: int = 16384,
         tls_verify: bool = True,
         language_hint: str = "Danish",
         default_profile: str = "general",
@@ -84,6 +85,7 @@ class VisionLLMConverter:
         self._verify = tls_verify
         self._dpi = dpi
         self._max_pages = max_pages
+        self._max_tokens = max_tokens
         self._language_hint = language_hint
         # Forwarded verbatim to render_to_pngs for the office->PDF leg.
         self._gotenberg_url = gotenberg_url
@@ -200,7 +202,7 @@ class VisionLLMConverter:
             "model": self._model,
             # Determinism: the same diagram should reconstruct the same way.
             "temperature": 0,
-            "max_tokens": 4096,
+            "max_tokens": self._max_tokens,
             "messages": [
                 {"role": "system", "content": prof.system(self._language_hint)},
                 {"role": "user", "content": user_parts},
@@ -224,6 +226,16 @@ class VisionLLMConverter:
             body = resp.json()
         except ValueError as exc:
             raise ExtractionError(f"vision-llm returned non-JSON for {filename}: {exc}") from exc
+
+        # Truncation is a hard failure (distinct from the empty/no-figure case below):
+        # the model hit the output cap and the markdown is cut off mid-document, so we
+        # must not ship a half-transcribed page set into the index. Fires even on the
+        # allow_empty/figure path.
+        if _finish_reason_from_response(body) == "length":
+            raise ExtractionError(
+                f"vision-llm output truncated for {filename} at max_tokens={self._max_tokens} "
+                f"(finish_reason=length); raise VISION_LLM_MAX_TOKENS or use a text engine"
+            )
 
         content = _content_from_response(body)
         if not content.strip():
@@ -275,3 +287,18 @@ def _content_from_response(body: object) -> str:
         return ""
     content = message.get("content")
     return content if isinstance(content, str) else ""
+
+
+def _finish_reason_from_response(body: object) -> str | None:
+    """``choices[0].finish_reason`` from an OpenAI-shaped body, or ``None`` on drift.
+
+    A missing/None finish_reason yields ``None`` (no truncation raised), so servers
+    that omit the field stay tolerated.
+    """
+    if not isinstance(body, dict):
+        return None
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    finish_reason = choices[0].get("finish_reason")
+    return finish_reason if isinstance(finish_reason, str) else None

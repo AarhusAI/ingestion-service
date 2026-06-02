@@ -217,6 +217,13 @@ class Settings(BaseSettings):
     # profiles (diagram/general/ocr) and the topology page render.
     vision_llm_dpi: int = 150
     vision_llm_max_pages: int = 20
+    # Max output tokens for the multimodal call. The served vLLM runs with
+    # --max-model-len 32768 (TOTAL context = image-input + prompt + output); page
+    # images cost only a few thousand input tokens, so 16384 for output is safe and
+    # fits multi-page docs. Output exceeding this fails the extraction
+    # (finish_reason=length) rather than silently truncating — raise it (up to the
+    # input headroom under max-model-len) for very long documents.
+    vision_llm_max_tokens: int = 16384
     vision_llm_tls_verify: bool = True
     # Injected into the system prompt so the model keeps the document's source
     # language verbatim instead of translating.

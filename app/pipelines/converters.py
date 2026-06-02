@@ -88,6 +88,7 @@ def build_converter(settings: Settings, engine_override: str | None = None):
             read_timeout=settings.vision_llm_read_timeout,
             dpi=settings.vision_llm_dpi,
             max_pages=settings.vision_llm_max_pages,
+            max_tokens=settings.vision_llm_max_tokens,
             tls_verify=settings.vision_llm_tls_verify,
             language_hint=settings.vision_llm_language_hint,
             default_profile=settings.vision_llm_profile,
