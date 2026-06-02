@@ -4,6 +4,7 @@ The renderer and the chat-completions HTTP call are patched at the module symbol
 so no Gotenberg / pypdfium2 / VLM endpoint is touched.
 """
 
+import base64
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -209,3 +210,46 @@ def test_api_key_never_appears_in_error_message():
     ):
         _conv(api_key="SUPERSECRETKEY").run(sources=["f.docx"], meta=None)
     assert "SUPERSECRETKEY" not in str(excinfo.value)
+
+
+def test_images_override_skips_render_and_sends_those_bytes():
+    with (
+        patch(_RENDER) as render,
+        patch(_POST, return_value=_ok_response("## Fig")) as post,
+    ):
+        out = _conv().run(
+            sources=["f.docx"],
+            meta=None,
+            profile="figure",
+            images_override=[b"BLIP1", b"BLIP2"],
+        )["documents"]
+    render.assert_not_called()
+    assert out[0].meta["page_count"] == 2  # page_count == figure-image count here
+    _, kwargs = post.call_args
+    image_parts = [p for p in kwargs["json"]["messages"][1]["content"] if p["type"] == "image_url"]
+    assert len(image_parts) == 2
+    expected = "data:image/png;base64," + base64.b64encode(b"BLIP1").decode("ascii")
+    assert image_parts[0]["image_url"]["url"] == expected
+
+
+def test_empty_content_with_override_returns_empty_not_error():
+    # The figure profile is told to output nothing when there is no figure; on the
+    # override (figure) path that must yield "" so the caller ships native body.
+    with (
+        patch(_RENDER) as render,
+        patch(_POST, return_value=_ok_response("   ")),
+    ):
+        out = _conv().run(
+            sources=["f.docx"], meta=None, profile="figure", images_override=[b"PHOTO"]
+        )["documents"]
+    render.assert_not_called()
+    assert out[0].content == ""
+
+
+def test_empty_content_without_override_still_raises():
+    with (
+        patch(_RENDER, return_value=[b"png"]),
+        patch(_POST, return_value=_ok_response("   ")),
+        pytest.raises(ExtractionError, match="empty content"),
+    ):
+        _conv().run(sources=["f.docx"], meta=None)

@@ -47,6 +47,7 @@ from app.config import Settings
 from app.log_utils import sanitize_for_log
 from app.pipelines.converters import build_converter
 from app.pipelines.detectors import docx_diagram_profile
+from app.pipelines.docx_images import extract_docx_figure_images
 from app.pipelines.docx_text import extract_docx_lines
 
 log = logging.getLogger(__name__)
@@ -139,13 +140,32 @@ class HybridDiagramConverter:
     def _hybrid_document(
         self, source: str, lines: list[str], source_meta: dict, pass_profile: str
     ) -> Document:
-        """Native body (authoritative) + grounded vision diagram → one Document."""
+        """Native body (authoritative) + a vision-inferred diagram → one Document."""
         native_body = "\n".join(lines)
+
+        # The two raster/vector profiles want opposite things from the vision pass:
+        #
+        # - topology (vector flowchart): the labels ARE the native text, so ground
+        #   the model on it ("use ONLY these strings as node labels") and let it
+        #   render the page to infer structure.
+        # - figure (raster diagram): the labels are pixels NOT in the native text,
+        #   so grounding on the prose makes the model fabricate a diagram from prose
+        #   headings. Instead, hand it the embedded figure at native resolution and
+        #   read the labels from the image — no grounding. If extraction finds no
+        #   figure (odd package, vector-only), fall back to the full-page render.
+        if pass_profile == _FIGURE_PROFILE:
+            grounding = None
+            images_override = extract_docx_figure_images(source, self._settings) or None
+        else:
+            grounding = native_body
+            images_override = None
+
         result = self._vision.run(
             sources=[source],
             meta=source_meta,
             profile=pass_profile,
-            grounding=native_body,
+            grounding=grounding,
+            images_override=images_override,
         )
         vision_docs = result.get("documents", [])
         vision_doc = vision_docs[0] if vision_docs else None

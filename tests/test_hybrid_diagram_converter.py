@@ -63,6 +63,8 @@ def test_docx_passes_topology_profile_and_native_grounding_to_vision():
     assert kwargs["profile"] == "diagram-topology"
     # grounding is the native body, newline-joined and verbatim
     assert kwargs["grounding"] == "Sagsvurdering\n- Statusattest\nAfgørelse"
+    # topology renders the page (labels inferred from the image); no blip override
+    assert kwargs["images_override"] is None
 
 
 def test_request_meta_wins_over_hybrid_meta():
@@ -105,6 +107,7 @@ def test_raster_docx_uses_figure_profile_and_keeps_full_output():
     with (
         patch.object(hdc, "extract_docx_lines", return_value=lines),
         patch.object(hdc, "docx_diagram_profile", return_value="figure"),
+        patch.object(hdc, "extract_docx_figure_images", return_value=[b"FIG-PNG"]),
     ):
         doc = _build(vision).run(sources=["f.docx"], meta=None)["documents"][0]
 
@@ -114,14 +117,35 @@ def test_raster_docx_uses_figure_profile_and_keeps_full_output():
     assert doc.meta["vision_profile"] == "figure"
     _, kwargs = vision.run.call_args
     assert kwargs["profile"] == "figure"
-    assert kwargs["grounding"] == "Støtte til køb af bil\nRetningslinje\nIndledning"
+    # figure path reads labels from the embedded image, so NO prose grounding …
+    assert kwargs["grounding"] is None
+    # … and the native-resolution blip bytes are sent instead of a page render.
+    assert kwargs["images_override"] == [b"FIG-PNG"]
+
+
+def test_figure_extraction_empty_falls_back_to_full_page_render():
+    # No extractable blip (odd package) -> images_override omitted so the vision
+    # converter renders the page as before. Still no grounding on the figure path.
+    vision = _vision(content="## Fig\n```mermaid\nflowchart TD\n  n1[\"X\"]\n```")
+    with (
+        patch.object(hdc, "extract_docx_lines", return_value=["A", "B", "C"]),
+        patch.object(hdc, "docx_diagram_profile", return_value="figure"),
+        patch.object(hdc, "extract_docx_figure_images", return_value=[]),
+    ):
+        _build(vision).run(sources=["f.docx"], meta=None)
+    _, kwargs = vision.run.call_args
+    assert kwargs["images_override"] is None
+    assert kwargs["grounding"] is None
 
 
 def test_raster_docx_with_empty_vision_ships_native_body_only():
+    # The decorative-image case: figure pass returns nothing -> native body alone,
+    # no diagram section, no exception.
     vision = _vision(content="   ", meta={})
     with (
         patch.object(hdc, "extract_docx_lines", return_value=["A", "B", "C"]),
         patch.object(hdc, "docx_diagram_profile", return_value="figure"),
+        patch.object(hdc, "extract_docx_figure_images", return_value=[b"PHOTO"]),
     ):
         doc = _build(vision).run(sources=["f.docx"], meta=None)["documents"][0]
     assert doc.content == "A\nB\nC"
