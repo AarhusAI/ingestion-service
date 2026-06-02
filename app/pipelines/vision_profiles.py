@@ -12,6 +12,12 @@ Shipped profiles:
 - ``general`` — faithful full-page transcription to clean GitHub-Flavored
   Markdown (headings, paragraphs, lists, tables) with no flowchart assumptions.
   The catch-all for arbitrary visual documents.
+- ``figure`` — scoped figure/diagram extraction for a doc that is *mostly prose*
+  with one embedded raster image (a flattened PNG flowchart/chart). The running
+  prose is supplied separately (verbatim from the docx XML by the hybrid
+  converter), so this profile renders ONLY the embedded figure and ignores body
+  paragraphs — the raster counterpart of ``diagram-topology`` (which assumes the
+  whole page IS the diagram).
 - ``ocr`` — plain-text transcription of scanned pages: reading order and line
   breaks preserved, minimal structure, no commentary.
 
@@ -132,6 +138,46 @@ _GENERAL_USER = (
 
 
 # --------------------------------------------------------------------------
+# figure (embedded figure only — prose comes from native docx text)
+# --------------------------------------------------------------------------
+
+
+def _figure_system(language_hint: str) -> str:
+    return (
+        f"You are a figure-extraction engine. You receive page images of a "
+        f"{language_hint}-language document that is MOSTLY running prose — and that prose has "
+        f"ALREADY been transcribed separately, so you must ignore it. Your ONLY job is to find "
+        f"any embedded figure — a flowchart, process diagram, cycle, org chart, or chart — and "
+        f"render ONLY that figure as GitHub-Flavored Markdown, plus, if it has flow or "
+        f"structure, exactly one fenced Mermaid block under `## Procesdiagram (Mermaid)`. Do "
+        f"NOT transcribe body paragraphs, headings, or lists that are ordinary prose. Preserve "
+        f"all {language_hint} labels inside the figure exactly as written; never translate, "
+        f"summarize, or invent. Mark unreadable text [unreadable]. If the pages contain no such "
+        f"figure, output nothing at all."
+    )
+
+
+# Mirrors the Mermaid scaffold of _DIAGRAM_USER, but scoped to the embedded figure
+# and explicitly suppressing the surrounding prose (supplied from native text).
+_FIGURE_USER = (
+    "Render only the embedded figure/diagram, ignoring all running body prose. If the figure "
+    "shows flow or a cycle, give it a short `## <figure title>` heading (if one is visible) "
+    "followed by exactly one fenced mermaid block under `## Procesdiagram (Mermaid)`, like this:"
+    "\n\n"
+    "```mermaid\n"
+    "flowchart TD\n"
+    '  n1["Modtag ansøgning"] --> n2["Opret sag"]\n'
+    '  n2 -->|Ja| n3["Bevilling"]\n'
+    '  n2 -->|Nej| n4["Afslag"]\n'
+    "```\n\n"
+    "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
+    "quotes; one edge per arrow following its direction; decision branches use `-->|label|`; "
+    "group each lane/actor region with `subgraph \"Lane name\" ... end`. If there is no figure, "
+    "output nothing."
+)
+
+
+# --------------------------------------------------------------------------
 # ocr (plain-text transcription of scans)
 # --------------------------------------------------------------------------
 
@@ -159,6 +205,7 @@ _PROFILES: dict[str, Profile] = {
         "diagram-topology", _diagram_topology_system, _DIAGRAM_TOPOLOGY_USER
     ),
     "general": Profile("general", _general_system, _GENERAL_USER),
+    "figure": Profile("figure", _figure_system, _FIGURE_USER),
     "ocr": Profile("ocr", _ocr_system, _OCR_USER),
 }
 

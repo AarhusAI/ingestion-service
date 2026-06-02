@@ -92,6 +92,41 @@ def test_no_mermaid_fence_ships_native_body_only():
     assert "Procesdiagram" not in doc.content
 
 
+def test_raster_docx_uses_figure_profile_and_keeps_full_output():
+    # docx_diagram_profile says "figure" (raster diagram): the vision pass runs
+    # the figure profile and its WHOLE output is kept (its own heading + Mermaid),
+    # not just the fence — appended after the verbatim native prose.
+    figure_out = (
+        "## Procesoverblik\n\n"
+        '```mermaid\nflowchart TD\n  n1["Sagsåbning"] --> n2["Opfølgning"]\n```'
+    )
+    vision = _vision(content=figure_out)
+    lines = ["Støtte til køb af bil", "Retningslinje", "Indledning"]
+    with (
+        patch.object(hdc, "extract_docx_lines", return_value=lines),
+        patch.object(hdc, "docx_diagram_profile", return_value="figure"),
+    ):
+        doc = _build(vision).run(sources=["f.docx"], meta=None)["documents"][0]
+
+    assert "Støtte til køb af bil" in doc.content  # native prose preserved
+    assert "## Procesoverblik" in doc.content  # figure's own heading kept
+    assert "```mermaid" in doc.content
+    assert doc.meta["vision_profile"] == "figure"
+    _, kwargs = vision.run.call_args
+    assert kwargs["profile"] == "figure"
+    assert kwargs["grounding"] == "Støtte til køb af bil\nRetningslinje\nIndledning"
+
+
+def test_raster_docx_with_empty_vision_ships_native_body_only():
+    vision = _vision(content="   ", meta={})
+    with (
+        patch.object(hdc, "extract_docx_lines", return_value=["A", "B", "C"]),
+        patch.object(hdc, "docx_diagram_profile", return_value="figure"),
+    ):
+        doc = _build(vision).run(sources=["f.docx"], meta=None)["documents"][0]
+    assert doc.content == "A\nB\nC"
+
+
 def test_non_docx_delegates_to_pure_vision():
     vision = _vision(content="full vision markdown", meta={"extractor": "vision-llm"})
     with patch.object(hdc, "extract_docx_lines") as ex:

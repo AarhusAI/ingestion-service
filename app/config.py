@@ -153,6 +153,35 @@ class Settings(BaseSettings):
     # count for a docx to route to the diagram engine: ratio = drawing /
     # (body + 1).
     extraction_router_drawing_ratio: float = 2.0
+    # Raster-image signal (a SECOND trigger for the diagram route). A docx whose
+    # key content is a flattened raster PNG diagram (referenced via <a:blip> in
+    # word/document.xml) has zero textboxes, so the signal above never fires and
+    # the figure is dropped by plain-text engines. This catches such docs; the
+    # diagram converter then uses the `figure` vision profile (native verbatim
+    # prose + a vision pass scoped to the embedded figure). Header/footer logos
+    # are excluded for free — detection reads only word/document.xml.
+    #
+    # Minimum number of embedded body images (DrawingML <a:blip> in
+    # word/document.xml) before the raster signal is considered. The motivating
+    # doc has exactly one content-bearing diagram, so the default is 1; the
+    # display-area floor below — not the count — is what rejects decorative
+    # images.
+    extraction_router_min_body_images: int = 1
+    # Minimum rendered display AREA (EMU², from <wp:extent cx cy>) of the LARGEST
+    # body image for the raster signal to fire. 914400 EMU = 1 inch, so
+    # 836_127_360_000 EMU² = 1 in². Default 1.5e12 ≈ 1.79 in² (a ~3.4 cm square):
+    # a real process diagram (the motivating doc renders ~4.3 in²) clears it with
+    # margin, while a 16 px icon (~0.03 in²) or a 1-inch logo (1 in²) is well
+    # below it. Uses the max single extent, not the sum, so many small inline
+    # icons can't add up to a false trigger.
+    extraction_router_min_image_emu: int = 1_500_000_000_000
+    # Optional ratio gate: max_image_area_emu / (body_words + 1) must be at least
+    # this for the raster signal to fire. Guards against a single large
+    # DECORATIVE photo in an otherwise prose-heavy report. DEFAULT 0 = DISABLED,
+    # because the motivating doc has substantial prose (1536 words) around its
+    # diagram and a meaningful ratio can't cleanly separate it from a hero-photo
+    # doc. Operators who see decorative-photo false positives can raise it.
+    extraction_router_min_image_word_ratio: float = 0.0
 
     # ----- Vision LLM extraction (EXTRACTION_ENGINE=vision-llm) -----
     # Renders document pages to images and asks an OpenAI-compatible

@@ -97,3 +97,12 @@ def test_non_auto_mode_skips_router_engine_validation():
         _env_file=None,
         **{**_BASE, "extraction_engine": "tika", "extraction_router_diagram_engine": "banana"},
     )
+
+
+def test_raster_signal_threshold_defaults():
+    """The raster-image routing signal ships disabled-by-default-ratio with an
+    area floor that clears a real figure but not a logo (see config docstrings)."""
+    s = Settings(_env_file=None, **_BASE)
+    assert s.extraction_router_min_body_images == 1
+    assert s.extraction_router_min_image_emu == 1_500_000_000_000
+    assert s.extraction_router_min_image_word_ratio == 0.0
