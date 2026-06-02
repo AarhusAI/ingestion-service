@@ -28,12 +28,16 @@ flowchart LR
   ING["ingestion-service<br/>PUT /api/v1/ingest"]
   S3[("S3 / MinIO<br/>raw files")]
   SIDE["Tika / Kreuzberg<br/>extraction sidecar"]
+  GOT["Gotenberg<br/>office→PDF render sidecar"]
+  VLM["Vision LLM endpoint<br/>(multimodal, VISION_LLM_*)"]
   EMB["Embedding endpoint<br/>(embed.itkdev.dk, TEI, or in-process fastembed)"]
   QD[("Qdrant<br/>dense + optional sparse vectors")]
 
   OWB -->|"JSON {bucket, key}<br/>or multipart"| ING
   ING -->|fetch by key| S3
   ING -->|HTTP extract| SIDE
+  ING -.vision-llm / hybrid-diagram / auto.-> GOT
+  ING -.vision-llm / hybrid-diagram / auto.-> VLM
   ING -->|HTTP embed| EMB
   ING -->|write points| QD
 ```
@@ -142,9 +146,18 @@ Where to start reading when you need to change something:
 - [Task](https://taskfile.dev/) (Go Task runner)
 - A Qdrant instance (shared with the retrieval agent)
 - An OpenAI-compatible embedding endpoint (e.g. the `embed.itkdev.dk` proxy)
-- An extraction sidecar reachable on the same network: a Tika server (when
-  `EXTRACTION_ENGINE=tika`, the default) or a Kreuzberg API server (when
-  `EXTRACTION_ENGINE=kreuzberg`). Both ship as containers in the parent stack.
+- An extraction sidecar reachable on the same network: a Kreuzberg API server
+  (`EXTRACTION_ENGINE=kreuzberg` — the value shipped in `.env.example`, so it's
+  what you get out of the box) or a Tika server (`EXTRACTION_ENGINE=tika` — the
+  code-level fallback in `config.py` when nothing is configured). Both ship as
+  containers in the parent stack. See [Extraction Engines](#extraction-engines)
+  for the full matrix.
+- **Only for the vision engines** (`vision-llm`, `hybrid-diagram`, or `auto`
+  when it routes a diagram-heavy document): a [Gotenberg](https://gotenberg.dev/)
+  sidecar for office→PDF rendering — bundled in this repo's own
+  `docker-compose.yml`, so `task up` starts it for you — **and** an
+  OpenAI-compatible multimodal LLM endpoint (configured via `VISION_LLM_*`).
+  These are inert unless a vision engine is actually selected.
 
 ## Quick Start
 
@@ -153,9 +166,12 @@ Where to start reading when you need to change something:
 ```shell
 cp .env.example .env
 # Edit .env — at minimum set API_KEY and EMBEDDING_API_KEY. The other defaults
-# in .env.example (EMBEDDING_API_BASE_URL=https://embed.itkdev.dk/v1, MinIO,
-# Qdrant, Tika URLs) are the working Aarhus dev values; only override when
-# pointing at something else.
+# in .env.example (EXTRACTION_ENGINE=kreuzberg,
+# EMBEDDING_API_BASE_URL=https://embed.itkdev.dk/v1, MinIO, Qdrant, and the
+# Kreuzberg/Tika sidecar URLs) are the working Aarhus dev values; only override
+# when pointing at something else. If you switch to a vision engine
+# (vision-llm / hybrid-diagram / auto), also set VISION_LLM_API_BASE_URL +
+# VISION_LLM_API_KEY.
 
 # Generate a secure API key:
 python -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -175,14 +191,19 @@ task logs           # tail ingestion container logs
 Common task commands:
 
 ```shell
-task up             # start containers
+task up             # start containers (creates/verifies the 'frontend' network first)
 task down           # stop containers
+task restart        # down + up
+task build          # build the container image
 task shell          # open bash shell in the ingestion container
 task install        # reinstall deps (pip install '.[dev]')
 task lint           # run all linters (ruff check + format --check)
 task lint:fix       # auto-fix lint issues
 task test           # run all tests (pytest -v)
 task test:coverage  # run tests with coverage report
+task audit          # security audit: pip-audit (CVEs) + bandit (static scan); advisory only
+task audit:deps     # scan installed deps for known CVEs (pip-audit --strict)
+task audit:code     # static security scan of app/ (bandit -ll)
 task ci             # lint + test
 ```
 
@@ -293,9 +314,16 @@ Multipart-only. Same Bearer-token auth as `/api/v1/ingest`.
 Fields:
 
 - `file` (required) — the document to extract.
-- `engine` (optional) — one of `tika | pypdf | docling | unstructured | kreuzberg`.
+- `engine` (optional) — one of
+  `tika | pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram`.
   Overrides `EXTRACTION_ENGINE` for this single request. When omitted, the
-  configured default is used.
+  configured default is used. `auto` is a routing *mode* for ingest, not a
+  concrete converter, so it is **not** accepted here — pick the engine you want
+  to probe directly.
+- `profile` (optional) — vision-llm prompt profile (`diagram | general | ocr`).
+  Only valid with the `vision-llm` engine; supplying it for any other engine is
+  a `400 INVALID_REQUEST`. When omitted, the configured `VISION_LLM_PROFILE`
+  default is used.
 
 #### Example
 
@@ -313,12 +341,16 @@ curl -X POST \
 {
   "status": true,
   "engine": "pypdf",
+  "profile": null,
   "documents": [
     {"content": "# Heading\n...", "meta": {"page": 1}},
     {"content": "...",            "meta": {"page": 2}}
   ]
 }
 ```
+
+`profile` echoes the vision-llm prompt profile actually used (e.g. `"diagram"`),
+and is `null` for the non-vision engines.
 
 Errors use the same `IngestError` shape as `/api/v1/ingest`. Codes returned:
 `INVALID_REQUEST` (unknown engine, missing file, missing optional dependency
@@ -386,18 +418,34 @@ because they are **contracts with other services**:
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
-| `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred Mermaid graph. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
-| `auto` | day-one | Per-document routing: drawing-heavy `.docx` → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`), everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
+| `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred diagram. Picks its vision profile per document — `diagram-topology` (Mermaid only) for a *vector* flowchart whose labels are Word shapes, or `figure` for a *raster* PNG diagram whose labels are pixels. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
+| `auto` | day-one | Per-document routing: a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
 
 **`EXTRACTION_ROUTER_DIAGRAM_PROFILE`.** With the default diagram engine (`hybrid-diagram`)
-this is mostly moot — for a real docx the hybrid path pins its own `diagram-topology`
-profile. It only applies to hybrid's empty-docx fallback, or when you set
-`EXTRACTION_ROUTER_DIAGRAM_ENGINE=vision-llm` (where it picks `diagram`/`general`/`ocr` for
-auto-routed flowcharts, independent of the engine's own `VISION_LLM_PROFILE` default).
+this is mostly moot — for a real docx the hybrid path picks its own profile
+(`diagram-topology` for vector flowcharts, `figure` for raster diagrams). It only applies to
+hybrid's empty-docx fallback, or when you set `EXTRACTION_ROUTER_DIAGRAM_ENGINE=vision-llm`
+(where it picks `diagram`/`general`/`ocr` for auto-routed flowcharts, independent of the
+engine's own `VISION_LLM_PROFILE` default).
+
+**Raster-diagram detection.** A `.docx` whose key content is a flattened raster PNG (a
+process wheel, chart, or flowchart exported as an image) has zero textboxes, so the
+text-vs-drawing signal never fires and a plain-text engine would drop the figure entirely.
+A second signal catches it: a body image (DrawingML `<a:blip>` in `word/document.xml`) whose
+largest rendered display area (`<wp:extent>`, EMU²) clears `EXTRACTION_ROUTER_MIN_IMAGE_EMU`
+(default `1_500_000_000_000` ≈ 1.79 in²) routes to the diagram engine, which then uses the
+`figure` profile. The area floor — not a count — is what rejects decoration: header/footer
+logos are excluded for free (only `word/document.xml` is read), and an in-body logo/icon
+falls below ~1.79 in² (a real diagram renders several in²). `EXTRACTION_ROUTER_MIN_BODY_IMAGES`
+(default 1) gates the count, and the opt-in `EXTRACTION_ROUTER_MIN_IMAGE_WORD_RATIO` (default
+0 = off) can additionally require image-area-to-body-words for corpora with large decorative
+hero photos. **Edge:** the `figure` behaviour is specific to `hybrid-diagram`; if you set
+`EXTRACTION_ROUTER_DIAGRAM_ENGINE=vision-llm`, raster docs use `EXTRACTION_ROUTER_DIAGRAM_PROFILE`
+instead.
 
 **Seeing what `auto` chose.** The `/extract` response echoes the `engine` and `profile`
 used, and every chunk written to Qdrant carries `meta.extractor` / `meta.vision_profile`.
 For the `/ingest` path (Open WebUI's normal flow), set **`DEBUG=true`** to log the
-per-document routing decision — the detector signal (`textboxes`/`body_words`/`ratio`),
-the chosen `engine=… profile=…`, and the hybrid/vision branch — visible in the container
-logs (`docker logs <ingestion-container>`).
+per-document routing decision — the detector signal (textbox: `textboxes`/`body_words`/`ratio`;
+raster: `images`/`max_image_emu`), the chosen `engine=… profile=…`, and the hybrid/vision
+branch — visible in the container logs (`docker logs <ingestion-container>`).

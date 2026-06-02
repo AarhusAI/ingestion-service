@@ -98,7 +98,14 @@ class VisionLLMConverter:
         meta: dict | list[dict] | None = None,
         profile: str | None = None,
         grounding: str | None = None,
+        images_override: list[bytes] | None = None,
     ) -> dict:
+        # ``images_override``, when given, replaces the page render: the caller has
+        # already produced the exact image bytes to send (the hybrid converter
+        # extracts the native-resolution figure straight from the docx). It applies
+        # to a single-source call (how the hybrid converter uses it) and, because
+        # there is no figure to "miss", an empty model response is then treated as
+        # "no figure found" rather than a fatal error.
         # Defensive: an unknown profile (e.g. a future detector returning a name
         # not in the registry) falls back to the default rather than crashing.
         profile_name = profile or self._default_profile
@@ -115,26 +122,34 @@ class VisionLLMConverter:
             path = Path(source)
             request_meta = _meta_for(meta, i)
 
-            # render_to_pngs raises ExtractionError (with the filename) on any
-            # rendering failure — let it propagate unchanged.
-            images = render_to_pngs(
-                source,
-                gotenberg_url=self._gotenberg_url,
-                dpi=self._dpi,
-                max_pages=self._max_pages,
-                connect_timeout=self._gotenberg_connect_timeout,
-                read_timeout=self._gotenberg_read_timeout,
-                verify=self._gotenberg_tls_verify,
-            )
+            if images_override:
+                # Caller supplied the images (e.g. the docx figure, extracted at
+                # native resolution) — skip the render entirely.
+                images = images_override
+            else:
+                # render_to_pngs raises ExtractionError (with the filename) on any
+                # rendering failure — let it propagate unchanged.
+                images = render_to_pngs(
+                    source,
+                    gotenberg_url=self._gotenberg_url,
+                    dpi=self._dpi,
+                    max_pages=self._max_pages,
+                    connect_timeout=self._gotenberg_connect_timeout,
+                    read_timeout=self._gotenberg_read_timeout,
+                    verify=self._gotenberg_tls_verify,
+                )
 
             log.debug(
-                "vision %s: profile=%s pages=%d grounded=%s",
+                "vision %s: profile=%s images=%d grounded=%s override=%s",
                 sanitize_for_log(path.name),
                 profile_name,
                 len(images),
                 bool(grounding and grounding.strip()),
+                bool(images_override),
             )
-            content = self._reconstruct(images, path.name, profile_name, grounding)
+            content = self._reconstruct(
+                images, path.name, profile_name, grounding, allow_empty=bool(images_override)
+            )
             doc_meta = {
                 "extractor": "vision-llm",
                 "vision_profile": profile_name,
@@ -152,6 +167,7 @@ class VisionLLMConverter:
         filename: str,
         profile_name: str,
         grounding: str | None = None,
+        allow_empty: bool = False,
     ) -> str:
         """One chat-completions call over all page images → Markdown string.
 
@@ -159,6 +175,12 @@ class VisionLLMConverter:
         (e.g. extracted natively from a docx). It is injected as a user text part
         *before* the images so the model copies labels from it instead of
         OCR-guessing — used by the hybrid diagram converter.
+
+        ``allow_empty`` softens an empty model response into ``""`` instead of an
+        ``ExtractionError``. Used on the figure path: the ``figure`` profile is told
+        to "output nothing" when there is no figure (e.g. a purely decorative
+        image), and the caller then ships the native body alone — that must not fail
+        the whole ingest.
         """
         prof = get_profile(profile_name)
         image_parts = [
@@ -205,6 +227,9 @@ class VisionLLMConverter:
 
         content = _content_from_response(body)
         if not content.strip():
+            if allow_empty:
+                log.debug("vision-llm empty content for %s — no figure found", filename)
+                return ""
             raise ExtractionError(f"vision-llm returned empty content for {filename}")
         return content
 

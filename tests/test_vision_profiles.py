@@ -4,13 +4,15 @@ import pytest
 
 from app.pipelines.vision_profiles import KNOWN_PROFILES, get_profile
 
+_SHIPPED = ("diagram", "diagram-topology", "general", "figure", "ocr")
+
 
 def test_known_profiles_are_exactly_the_shipped_set():
-    assert set(KNOWN_PROFILES) == {"diagram", "diagram-topology", "general", "ocr"}
+    assert set(KNOWN_PROFILES) == set(_SHIPPED)
 
 
 def test_get_profile_returns_each_shipped_profile():
-    for name in ("diagram", "diagram-topology", "general", "ocr"):
+    for name in _SHIPPED:
         prof = get_profile(name)
         assert prof.name == name
         # system is parameterised by language_hint; user is a non-empty string.
@@ -24,7 +26,7 @@ def test_get_profile_unknown_raises():
 
 
 def test_language_hint_is_injected_into_system_prompt():
-    for name in ("diagram", "diagram-topology", "general", "ocr"):
+    for name in _SHIPPED:
         assert "Klingon" in get_profile(name).system("Klingon")
 
 
@@ -51,7 +53,16 @@ def test_general_profile_is_faithful_transcription():
     assert "mermaid" not in text  # no flowchart scaffold
 
 
-def test_ocr_profile_is_plain_text():
+def test_figure_profile_is_scoped_to_the_embedded_figure():
+    prof = get_profile("figure")
+    sys = prof.system("Danish").lower()
+    text = (prof.system("Danish") + prof.user).lower()
+    # Reads pixels into a Mermaid graph like the diagram profiles …
+    assert "mermaid" in text
+    # … but explicitly ignores the surrounding prose (it comes from native text)
+    # and emits nothing when there's no figure.
+    assert "prose" in sys
+    assert "nothing" in text
     prof = get_profile("ocr")
     text = (prof.system("Danish") + prof.user).lower()
     assert "ocr" in text or "scan" in text
