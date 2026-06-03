@@ -96,6 +96,7 @@ All config via environment variables, loaded by pydantic-settings in `app/config
 ## Failure-mode notes
 
 - **Tika / Kreuzberg sidecar down** → `EXTRACTION_FAILED`. Open WebUI's file row goes to `failed`; the user sees the error and can retry once the sidecar is back.
+- **Vision-LLM output exceeds `VISION_LLM_MAX_TOKENS`** → `EXTRACTION_FAILED`. The converter treats a `finish_reason=length` response as a hard failure (`vision_llm_converter.py`) rather than letting silently-truncated Markdown reach Qdrant. Remedy: raise `VISION_LLM_MAX_TOKENS` (staying under the served model's `--max-model-len` input headroom) or route the document to a text engine.
 - **Embedding endpoint down** → `EMBEDDING_FAILED` (or `SPARSE_EMBEDDING_FAILED` for the sparse stage). The all-or-nothing teardown ensures no partial points reach Qdrant.
 - **Qdrant write fails** → `QDRANT_WRITE_FAILED`. Tear-down still runs even if the original error came from a partial write — `_delete_existing_by_file_id()` swallows "collection not found" errors so the failure path is robust on cold starts.
 - **S3 fetch 404 / auth** → `S3_FETCH_FAILED`. The route layer catches this before the pipeline runs.

@@ -133,6 +133,11 @@ Where to start reading when you need to change something:
 | `app/pipelines/indexing.py` | Pipeline DAG construction, idempotency, exception teardown |
 | `app/pipelines/converters.py` | Converter factory (`EXTRACTION_ENGINE` dispatch) |
 | `app/pipelines/kreuzberg_converter.py` | Custom Haystack component for the Kreuzberg HTTP sidecar |
+| `app/pipelines/routing_converter.py` | `auto` mode — per-document engine routing (docx signals live in `detectors.py`) |
+| `app/pipelines/vision_llm_converter.py` | `vision-llm` engine — page render → multimodal LLM → Markdown + Mermaid |
+| `app/pipelines/hybrid_diagram_converter.py` | `hybrid-diagram` engine — native docx text + vision-inferred diagram |
+| `app/pipelines/vision_profiles.py` | Vision prompt profiles + the `KNOWN_PROFILES` registry |
+| `app/pipelines/rendering.py` | Page rendering — office→PDF via Gotenberg, PDF→PNG local |
 | `app/pipelines/splitter.py` | Splitter factory + custom HF tokenizer / Markdown chunkers |
 | `app/pipelines/embedders.py` | Dense (required) + sparse (optional) embedder factories |
 | `app/services/qdrant_setup.py` | Payload-index bootstrap (`collection_name`, `collection_type`, `languages`) |
@@ -320,10 +325,15 @@ Fields:
   configured default is used. `auto` is a routing *mode* for ingest, not a
   concrete converter, so it is **not** accepted here — pick the engine you want
   to probe directly.
-- `profile` (optional) — vision-llm prompt profile (`diagram | general | ocr`).
-  Only valid with the `vision-llm` engine; supplying it for any other engine is
-  a `400 INVALID_REQUEST`. When omitted, the configured `VISION_LLM_PROFILE`
-  default is used.
+- `profile` (optional) — vision-llm prompt profile. One of
+  `diagram | diagram-topology | general | figure | ocr` (the full profile
+  registry; `diagram-topology` and `figure` are primarily the auto / hybrid
+  internal profiles, but the endpoint accepts them too for probing). Accepted
+  only by the profile-aware engines — `vision-llm` and `hybrid-diagram` (where
+  it pins the vision fallback profile); supplying it for any other engine is a
+  `400 INVALID_REQUEST`. When omitted, the engine's configured default applies
+  (`VISION_LLM_PROFILE` for `vision-llm`; `hybrid-diagram` auto-selects per
+  document).
 
 #### Example
 
