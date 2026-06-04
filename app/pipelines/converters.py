@@ -6,6 +6,11 @@ Selects a Haystack converter based on ``EXTRACTION_ENGINE``. ``tika``,
 in-process). ``docling`` and ``unstructured`` are wired but their (heavy)
 deps are deliberately not in pyproject.toml — they will raise a clear
 ``ImportError`` at startup if selected without the dep installed.
+``vision-llm`` renders pages (office->PDF via the Gotenberg sidecar,
+PDF->PNG locally) and reconstructs structure via a multimodal LLM.
+
+Not built here: ``"auto"`` is a routing *mode*, not an engine — see
+``app/pipelines/routing_converter.py``, wired in ``indexing.py``.
 """
 
 from app.config import Settings
@@ -65,9 +70,45 @@ def build_converter(settings: Settings, engine_override: str | None = None):
             connect_timeout=settings.kreuzberg_connect_timeout,
             read_timeout=settings.kreuzberg_read_timeout,
             verify=settings.kreuzberg_tls_verify,
+            min_table_columns=settings.kreuzberg_min_table_columns,
         )
+
+    if engine == "vision-llm":
+        # Renders pages and reconstructs structure (flowcharts, diagrams) via a
+        # multimodal LLM. Office->PDF rendering goes through the Gotenberg
+        # sidecar; PDF->PNG is local (pypdfium2). Our own code — dep surface is
+        # httpx (already required) + pypdfium2/pillow.
+        from app.pipelines.vision_llm_converter import VisionLLMConverter
+
+        return VisionLLMConverter(
+            api_base_url=settings.vision_llm_api_base_url,
+            api_key=settings.vision_llm_api_key,
+            model=settings.vision_llm_model,
+            connect_timeout=settings.vision_llm_connect_timeout,
+            read_timeout=settings.vision_llm_read_timeout,
+            dpi=settings.vision_llm_dpi,
+            max_pages=settings.vision_llm_max_pages,
+            max_tokens=settings.vision_llm_max_tokens,
+            tls_verify=settings.vision_llm_tls_verify,
+            language_hint=settings.vision_llm_language_hint,
+            default_profile=settings.vision_llm_profile,
+            gotenberg_url=settings.gotenberg_url,
+            gotenberg_connect_timeout=settings.gotenberg_connect_timeout,
+            gotenberg_read_timeout=settings.gotenberg_read_timeout,
+            gotenberg_tls_verify=settings.gotenberg_tls_verify,
+        )
+
+    if engine == "hybrid-diagram":
+        # Native docx text (authoritative labels) + a vision-inferred Mermaid
+        # diagram. Wraps the vision-llm engine, so it carries the same config /
+        # dep surface and no extra env vars. Used as the auto-router's diagram
+        # engine; also selectable directly for forced use.
+        from app.pipelines.hybrid_diagram_converter import HybridDiagramConverter
+
+        return HybridDiagramConverter(settings)
 
     raise ValueError(
         f"Unknown EXTRACTION_ENGINE={engine!r} "
-        "(supported: tika | pypdf | docling | unstructured | kreuzberg)"
+        "(supported: tika | pypdf | docling | unstructured | kreuzberg | "
+        "vision-llm | hybrid-diagram)"
     )

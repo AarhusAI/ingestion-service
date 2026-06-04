@@ -137,9 +137,24 @@ def _build_document_store(s: Settings) -> QdrantDocumentStore:
     )
 
 
+def _build_converter_for_pipeline(s: Settings):
+    """Pick the converter component for the cached pipeline.
+
+    ``EXTRACTION_ENGINE=auto`` enables per-document routing — a single
+    ``RoutingConverter`` wraps the routable engines and decides per source.
+    Any other value pins one engine via ``build_converter`` (unchanged
+    behaviour). Imported lazily so non-auto deployments never load the router.
+    """
+    if s.extraction_engine.lower() == "auto":
+        from app.pipelines.routing_converter import RoutingConverter
+
+        return RoutingConverter(s)
+    return build_converter(s)
+
+
 def _build_pipeline(s: Settings, document_store: QdrantDocumentStore) -> Pipeline:
     pipeline = Pipeline()
-    pipeline.add_component("converter", build_converter(s))
+    pipeline.add_component("converter", _build_converter_for_pipeline(s))
     # Token-aware splitter when chunk_split_by="token" (default), Haystack's
     # word/sentence/passage DocumentSplitter otherwise. See app/pipelines/splitter.py.
     pipeline.add_component("splitter", build_splitter(s))

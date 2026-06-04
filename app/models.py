@@ -64,4 +64,6 @@ class ExtractResponse(BaseModel):
 
     status: bool = True
     engine: str
+    # The vision-llm prompt profile used, when applicable; None for other engines.
+    profile: str | None = None
     documents: list[ExtractedDocument]

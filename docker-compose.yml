@@ -34,11 +34,34 @@ services:
       DEBUG: ${DEBUG:-false}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
       # Extraction
-      EXTRACTION_ENGINE: ${EXTRACTION_ENGINE:-tika}
+      EXTRACTION_ENGINE: ${EXTRACTION_ENGINE:-auto}
       TIKA_URL: ${TIKA_URL:-http://tika:9998}
+      KREUZBERG_URL: ${KREUZBERG_URL:-http://kreuzberg:8000}
       KREUZBERG_CONNECT_TIMEOUT: ${KREUZBERG_CONNECT_TIMEOUT:-5.0}
       KREUZBERG_READ_TIMEOUT: ${KREUZBERG_READ_TIMEOUT:-60.0}
       KREUZBERG_TLS_VERIFY: ${KREUZBERG_TLS_VERIFY:-true}
+      # Content-based routing (EXTRACTION_ENGINE=auto)
+      EXTRACTION_ROUTER_DEFAULT: ${EXTRACTION_ROUTER_DEFAULT:-kreuzberg}
+      EXTRACTION_ROUTER_DIAGRAM_ENGINE: ${EXTRACTION_ROUTER_DIAGRAM_ENGINE:-vision-llm}
+      EXTRACTION_ROUTER_DIAGRAM_PROFILE: ${EXTRACTION_ROUTER_DIAGRAM_PROFILE:-diagram}
+      EXTRACTION_ROUTER_MIN_TEXTBOXES: ${EXTRACTION_ROUTER_MIN_TEXTBOXES:-20}
+      EXTRACTION_ROUTER_DRAWING_RATIO: ${EXTRACTION_ROUTER_DRAWING_RATIO:-2.0}
+      # Vision LLM extraction (vision-llm engine / auto diagram engine)
+      VISION_LLM_API_BASE_URL: ${VISION_LLM_API_BASE_URL:-}
+      VISION_LLM_API_KEY: ${VISION_LLM_API_KEY:-}
+      VISION_LLM_MODEL: ${VISION_LLM_MODEL:-gemma4-nvfp4}
+      VISION_LLM_CONNECT_TIMEOUT: ${VISION_LLM_CONNECT_TIMEOUT:-5.0}
+      VISION_LLM_READ_TIMEOUT: ${VISION_LLM_READ_TIMEOUT:-180.0}
+      VISION_LLM_DPI: ${VISION_LLM_DPI:-150}
+      VISION_LLM_MAX_PAGES: ${VISION_LLM_MAX_PAGES:-20}
+      VISION_LLM_TLS_VERIFY: ${VISION_LLM_TLS_VERIFY:-true}
+      VISION_LLM_LANGUAGE_HINT: ${VISION_LLM_LANGUAGE_HINT:-Danish}
+      VISION_LLM_PROFILE: ${VISION_LLM_PROFILE:-general}
+      # Document rendering (Gotenberg sidecar)
+      GOTENBERG_URL: ${GOTENBERG_URL:-http://gotenberg:3000}
+      GOTENBERG_CONNECT_TIMEOUT: ${GOTENBERG_CONNECT_TIMEOUT:-5.0}
+      GOTENBERG_READ_TIMEOUT: ${GOTENBERG_READ_TIMEOUT:-120.0}
+      GOTENBERG_TLS_VERIFY: ${GOTENBERG_TLS_VERIFY:-true}
       # Chunking
       CHUNK_SIZE: ${CHUNK_SIZE:-400}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-80}
@@ -76,3 +99,20 @@ services:
       #  HTTPS config - uncomment to enable redirect from :80 to :443
       - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.middlewares=redirect-to-https"
       - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    networks:
+      - app
+    ports:
+      - "3000"
+    healthcheck:
+      test: [ "CMD", "curl", "-sf", "http://localhost:3000/health" ]
+      start_period: 20s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=true"
+      - "--chromium-allow-list=file:///tmp/.*"

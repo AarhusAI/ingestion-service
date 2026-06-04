@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # Minimum length enforced on ``API_KEY``. The bearer is a shared static
@@ -7,6 +7,15 @@ from pydantic_settings import BaseSettings
 # (not in Settings) so the value is referenced from the validator without
 # a self-reference cycle.
 API_KEY_MIN_LENGTH = 32
+
+# Concrete extraction engines the factory (``app/pipelines/converters.py``)
+# knows how to build. ``"auto"`` is NOT in here — it is a routing *mode*, not a
+# converter, so the auto-mode validator below must resolve the router's
+# default/diagram engines against this set. Kept here (not in Settings) so both
+# the validator and the factory can reference one source of truth.
+KNOWN_EXTRACTION_ENGINES = frozenset(
+    {"tika", "pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram"}
+)
 
 
 class Settings(BaseSettings):
@@ -39,6 +48,8 @@ class Settings(BaseSettings):
     @field_validator(
         "tika_url",
         "kreuzberg_url",
+        "vision_llm_api_base_url",
+        "gotenberg_url",
         "qdrant_uri",
         "embedding_api_base_url",
         "s3_endpoint_url",
@@ -50,6 +61,26 @@ class Settings(BaseSettings):
         if not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError(f"URL must start with http:// or https://; got {v!r}")
         return v
+
+    # ----- Routing engine-name validator -----
+    # When routing is on (extraction_engine="auto"), the router's default and
+    # diagram engines are real converters that get built at startup — so a typo
+    # like extraction_router_diagram_engine="vsion-llm" must fail fast here, not
+    # at the first diagram document. The route layer's _SUPPORTED_ENGINES only
+    # gates /extract overrides; this is the only place that validates the
+    # routing engine names.
+    @model_validator(mode="after")
+    def _validate_routing_engines(self):
+        if self.extraction_engine.lower() != "auto":
+            return self
+        for field in ("extraction_router_default", "extraction_router_diagram_engine"):
+            value = getattr(self, field).lower()
+            if value not in KNOWN_EXTRACTION_ENGINES:
+                raise ValueError(
+                    f"{field}={getattr(self, field)!r} is not a known extraction engine "
+                    f"(one of: {' | '.join(sorted(KNOWN_EXTRACTION_ENGINES))})"
+                )
+        return self
 
     # ----- Server -----
     host: str = "0.0.0.0"
@@ -64,9 +95,14 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 100 * 1024 * 1024
 
     # ----- Extraction -----
-    # tika | pypdf | docling | unstructured | kreuzberg
+    # tika | pypdf | docling | unstructured | kreuzberg | vision-llm | auto
     # tika/kreuzberg run as external HTTP sidecars; the rest are in-process.
     # docling/unstructured require optional deps not bundled by default.
+    # vision-llm renders pages and reconstructs structure via a multimodal LLM.
+    # "auto" enables per-document routing (see app/pipelines/detectors.py +
+    # routing_converter.py): drawing-heavy docx go to the diagram engine, the
+    # rest to the router default. Any other value pins that single engine
+    # (current behaviour — routing OFF).
     extraction_engine: str = "tika"
     tika_url: str = "http://tika:9998"
     kreuzberg_url: str = "http://kreuzberg:8000"
@@ -82,6 +118,133 @@ class Settings(BaseSettings):
     # verification with verify=False. Default True; set to false only with
     # full awareness.
     kreuzberg_tls_verify: bool = True
+    # Minimum columns a kreuzberg-detected table's rendered markdown must have to
+    # be appended as a ## Tables section. The 4.0.x detector false-fires on
+    # multi-column PROSE and emits 1-column line-dumps that just duplicate the body
+    # (cells carry no row/col geometry, so even real tables can degenerate to one
+    # column). Default 2 drops that duplication while keeping genuinely
+    # column-segmented tables. Set to 1 to restore keep-all behaviour.
+    kreuzberg_min_table_columns: int = 2
+
+    # ----- Content-based routing (EXTRACTION_ENGINE=auto) -----
+    # Only consulted when extraction_engine == "auto". Defaults keep the
+    # cheap-default contract (tika for ordinary docs) while sending
+    # drawing-heavy docx (swim-lane flowcharts etc.) to the vision engine.
+    extraction_router_default: str = "tika"
+    # hybrid-diagram = native docx text (authoritative, complete labels) + a
+    # vision-inferred Mermaid graph. Preferred over bare vision-llm for the
+    # diagram route because the body text is verbatim from the package XML
+    # instead of OCR-guessed; vision-llm stays available for forced use.
+    extraction_router_diagram_engine: str = "hybrid-diagram"
+    # Vision-LLM profile the diagram route uses. Pinned separately from
+    # vision_llm_profile (the engine's own default) so changing the engine
+    # default for forced/explicit use can't alter what auto-routing sends for
+    # flowcharts. Validated against the profile registry at startup.
+    #
+    # NOTE: with the default diagram engine (hybrid-diagram) this is mostly
+    # moot — for a real (text-bearing) docx the hybrid converter pins its own
+    # `diagram-topology` profile and ignores this value. It still applies in
+    # two narrow cases: (a) the hybrid fallback for a diagram-detected docx with
+    # ~no native text, and (b) when extraction_router_diagram_engine=vision-llm,
+    # where it fully selects the auto-routed flowchart profile (diagram/general/
+    # ocr). Kept for (b): dropping it would force that path onto vision_llm_profile
+    # (default "general", wrong for flowcharts), reintroducing the coupling the
+    # separate pin avoids.
+    extraction_router_diagram_profile: str = "diagram"
+    # Detection thresholds (tunable per deployment without a code change).
+    # An absolute floor on the number of drawing/textbox text-bearing shapes
+    # so a couple of callout boxes in an otherwise normal document can't
+    # trigger the expensive engine.
+    extraction_router_min_textboxes: int = 20
+    # Drawing/textbox text must be at least this many times the body word
+    # count for a docx to route to the diagram engine: ratio = drawing /
+    # (body + 1).
+    extraction_router_drawing_ratio: float = 2.0
+    # Raster-image signal (a SECOND trigger for the diagram route). A docx whose
+    # key content is a flattened raster PNG diagram (referenced via <a:blip> in
+    # word/document.xml) has zero textboxes, so the signal above never fires and
+    # the figure is dropped by plain-text engines. This catches such docs; the
+    # diagram converter then uses the `figure` vision profile (native verbatim
+    # prose + a vision pass scoped to the embedded figure). Header/footer logos
+    # are excluded for free — detection reads only word/document.xml.
+    #
+    # Minimum number of embedded body images (DrawingML <a:blip> in
+    # word/document.xml) before the raster signal is considered. The motivating
+    # doc has exactly one content-bearing diagram, so the default is 1; the
+    # display-area floor below — not the count — is what rejects decorative
+    # images.
+    extraction_router_min_body_images: int = 1
+    # Minimum rendered display AREA (EMU², from <wp:extent cx cy>) of the LARGEST
+    # body image for the raster signal to fire. 914400 EMU = 1 inch, so
+    # 836_127_360_000 EMU² = 1 in². Default 1.5e12 ≈ 1.79 in² (a ~3.4 cm square):
+    # a real process diagram (the motivating doc renders ~4.3 in²) clears it with
+    # margin, while a 16 px icon (~0.03 in²) or a 1-inch logo (1 in²) is well
+    # below it. Uses the max single extent, not the sum, so many small inline
+    # icons can't add up to a false trigger.
+    extraction_router_min_image_emu: int = 1_500_000_000_000
+    # Optional ratio gate: max_image_area_emu / (body_words + 1) must be at least
+    # this for the raster signal to fire. Guards against a single large
+    # DECORATIVE photo in an otherwise prose-heavy report. DEFAULT 0 = DISABLED:
+    # the motivating diagram doc (1536 words, ~2.3e9 ratio) and a hero-photo report
+    # land too close to cleanly separate without real-sample calibration, so a
+    # guessed threshold risks routing a real diagram to the default engine. Lower
+    # stakes now, too — a decorative photo that slips through to the figure profile
+    # degrades gracefully (the vision pass returns nothing → native body alone, see
+    # docx_images / VisionLLMConverter allow_empty) rather than failing the ingest.
+    # TODO: calibrate a non-zero default against a few real prose+photo docs;
+    # operators seeing decorative-photo false positives can raise it meanwhile.
+    extraction_router_min_image_word_ratio: float = 0.0
+
+    # ----- Vision LLM extraction (EXTRACTION_ENGINE=vision-llm) -----
+    # Renders document pages to images and asks an OpenAI-compatible
+    # multimodal endpoint to reconstruct the structure as Markdown + Mermaid.
+    # Model id is operator-configured so the code stays model-agnostic; the
+    # served model today is a 4-bit (NVFP4) Gemma. Office->PDF rendering is
+    # delegated to the Gotenberg sidecar (below); PDF->PNG is local.
+    vision_llm_api_base_url: str = ""
+    vision_llm_api_key: str = ""
+    vision_llm_model: str = "gemma4-nvfp4"
+    vision_llm_connect_timeout: float = 5.0
+    # Long read window: a quantized VLM reasoning over several page images is
+    # slow. Connect still fails fast (a stalled endpoint shouldn't tie up a
+    # worker for the whole read window).
+    vision_llm_read_timeout: float = 180.0
+    # Render resolution and a hard page cap. Higher dpi = more legible but more
+    # image tokens; max_pages bounds reconstruction-quality drift and cost on
+    # long documents. NOTE: on the hybrid-diagram `figure` path the embedded figure
+    # is sent at its native package resolution (app/pipelines/docx_images.py), so
+    # dpi does NOT govern figure sharpness there — it applies to the full-page
+    # profiles (diagram/general/ocr) and the topology page render.
+    vision_llm_dpi: int = 150
+    vision_llm_max_pages: int = 20
+    # Max output tokens for the multimodal call. The served vLLM runs with
+    # --max-model-len 32768 (TOTAL context = image-input + prompt + output); page
+    # images cost only a few thousand input tokens, so 16384 for output is safe and
+    # fits multi-page docs. Output exceeding this fails the extraction
+    # (finish_reason=length) rather than silently truncating — raise it (up to the
+    # input headroom under max-model-len) for very long documents.
+    vision_llm_max_tokens: int = 16384
+    vision_llm_tls_verify: bool = True
+    # Injected into the system prompt so the model keeps the document's source
+    # language verbatim instead of translating.
+    vision_llm_language_hint: str = "Danish"
+    # The engine's default prompt profile (diagram | general | ocr), used for
+    # forced/explicit vision-llm use (EXTRACTION_ENGINE=vision-llm or
+    # /extract?engine=vision-llm without ?profile=). NOT what auto-routing uses
+    # for flowcharts — that is extraction_router_diagram_profile. Validated
+    # against the profile registry at startup.
+    vision_llm_profile: str = "general"
+
+    # ----- Document rendering (Gotenberg sidecar) -----
+    # External container that converts office formats (docx/odt/rtf/pptx/...)
+    # to PDF via headless LibreOffice. Same deployment model as the tika /
+    # kreuzberg sidecars — keeps LibreOffice (and its cold start / profile
+    # locks) out of this service's image. Used by the vision-llm engine.
+    gotenberg_url: str = "http://gotenberg:3000"
+    gotenberg_connect_timeout: float = 5.0
+    # LibreOffice conversion is the slow part, so the read window is generous.
+    gotenberg_read_timeout: float = 120.0
+    gotenberg_tls_verify: bool = True
 
     # ----- Chunking -----
     # token mode measures chunk size with the embedding model's HuggingFace

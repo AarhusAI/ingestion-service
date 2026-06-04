@@ -25,13 +25,22 @@ from app.auth import verify_api_key
 from app.config import settings as global_settings
 from app.models import ExtractedDocument, ExtractResponse, IngestError
 from app.pipelines.converters import build_converter
+from app.pipelines.vision_profiles import KNOWN_PROFILES
 from app.routes.ingest import _safe_error_detail, stream_upload_to_tempfile
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_SUPPORTED_ENGINES = {"tika", "pypdf", "docling", "unstructured", "kreuzberg"}
+_SUPPORTED_ENGINES = {
+    "tika",
+    "pypdf",
+    "docling",
+    "unstructured",
+    "kreuzberg",
+    "vision-llm",
+    "hybrid-diagram",
+}
 
 
 @router.post(
@@ -51,17 +60,29 @@ async def extract(
         None,
         description=(
             "Optional override of EXTRACTION_ENGINE for this request. "
-            "One of: tika, pypdf, docling, unstructured, kreuzberg. "
-            "When omitted, the configured engine is used."
+            "One of: tika, pypdf, docling, unstructured, kreuzberg, vision-llm, "
+            "hybrid-diagram (diagram .docx: native text + vision Mermaid). "
+            "When omitted, the configured engine is used. ('auto' is a routing "
+            "mode for ingest, not a concrete engine — not accepted here.)"
         ),
         examples=["pypdf"],
     ),
+    profile: str | None = Form(
+        None,
+        description=(
+            "Optional vision-llm prompt profile for this request. One of: "
+            f"{', '.join(sorted(KNOWN_PROFILES))}. Only valid with the vision-llm engine; "
+            "when omitted, the configured VISION_LLM_PROFILE default is used."
+        ),
+        examples=["ocr"],
+    ),
     _api_key: str = Depends(verify_api_key),
 ):
-    # ``file``/``engine`` are typed as Optional so FastAPI binds whatever is in the
-    # form (even when fields are missing) and the existing 400 INVALID_REQUEST
+    # ``file``/``engine``/``profile`` are typed as Optional so FastAPI binds whatever is
+    # in the form (even when fields are missing) and the existing 400 INVALID_REQUEST
     # contract is preserved — we'd lose it if we let FastAPI auto-422.
     engine = _validate_engine(engine)
+    profile = _validate_profile(profile)
     if file is None:
         raise HTTPException(
             status_code=400,
@@ -73,13 +94,17 @@ async def extract(
     local_path = await stream_upload_to_tempfile(file)
 
     try:
-        documents = _run_converter(local_path, engine)
+        documents = _run_converter(local_path, engine, profile)
     finally:
         with contextlib.suppress(OSError):
             os.unlink(local_path)
 
+    # Reflect the profile actually used (the converter records it on each doc);
+    # fall back to the requested value for empty extractions.
+    used_profile = (documents[0].meta or {}).get("vision_profile") if documents else None
     return ExtractResponse(
         engine=engine or global_settings.extraction_engine,
+        profile=used_profile or profile,
         documents=[
             ExtractedDocument(content=d.content or "", meta=d.meta or {}) for d in documents
         ],
@@ -108,7 +133,24 @@ def _validate_engine(raw) -> str | None:
     return value
 
 
-def _run_converter(file_path: str, engine: str | None) -> list:
+def _validate_profile(raw) -> str | None:
+    """Return a normalized profile name, ``None`` (= engine default), or 400."""
+    if raw is None or raw == "":
+        return None
+    value = str(raw).lower()
+    if value not in KNOWN_PROFILES:
+        raise HTTPException(
+            status_code=400,
+            detail=IngestError(
+                error=f"Unknown profile={raw!r} "
+                f"(supported: {' | '.join(sorted(KNOWN_PROFILES))})",
+                code="INVALID_REQUEST",
+            ).model_dump(),
+        )
+    return value
+
+
+def _run_converter(file_path: str, engine: str | None, profile: str | None = None) -> list:
     """Build the converter and call ``.run`` standalone (no pipeline).
 
     Mirrors how ``app/pipelines/indexing.py`` invokes the converter via the
@@ -117,10 +159,24 @@ def _run_converter(file_path: str, engine: str | None) -> list:
     ``unstructured`` converter uses ``paths=`` rather than ``sources=`` — it
     has never worked in this codebase's ingest pipeline either; failures
     surface here as ``EXTRACTION_FAILED``.
+
+    ``profile`` is forwarded only to profile-aware converters (vision-llm); a
+    profile supplied for any other engine is a 400 rather than a silent no-op.
     """
     try:
         converter = build_converter(global_settings, engine_override=engine)
-        result = converter.run(sources=[file_path], meta={})
+        run_kwargs: dict = {"sources": [file_path], "meta": {}}
+        if profile is not None:
+            if not getattr(converter, "accepts_profile", False):
+                raise HTTPException(
+                    status_code=400,
+                    detail=IngestError(
+                        error="profile is only valid with the vision-llm engine",
+                        code="INVALID_REQUEST",
+                    ).model_dump(),
+                )
+            run_kwargs["profile"] = profile
+        result = converter.run(**run_kwargs)
         return result["documents"]
     except ImportError as exc:
         # Optional dep not installed (docling-haystack / unstructured-fileconverter-haystack).
