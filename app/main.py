@@ -7,21 +7,20 @@ indexes exist, then serves requests until shutdown.
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from app.auth import verify_api_key
 from app.config import settings
+from app.logging_config import configure_logging
 from app.pipelines.indexing import init_pipeline, is_pipeline_ready
 from app.routes.extract import router as extract_router
 from app.routes.ingest import router as ingest_router
+from app.routes.inspect import router as inspect_router
 from app.services import qdrant_setup
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-if settings.debug:
-    logging.getLogger("app").setLevel(logging.DEBUG)
+configure_logging(settings)
 log = logging.getLogger(__name__)
 
 
@@ -76,11 +75,25 @@ app = FastAPI(
 
 app.include_router(ingest_router)
 app.include_router(extract_router)
+app.include_router(inspect_router)
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics(_api_key: str = Depends(verify_api_key)):
+    """Prometheus scrape endpoint.
+
+    Bearer-authenticated with the same ``API_KEY`` as ``/api/v1/ingest`` (mirrors
+    retrieval-agent) — the scrape job must send ``Authorization: Bearer <API_KEY>``.
+    Returns 404 when ``METRICS_ENABLED=false``; instrumentation runs regardless.
+    """
+    if not settings.metrics_enabled:
+        return JSONResponse(status_code=404, content={"detail": "metrics disabled"})
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health/ready")

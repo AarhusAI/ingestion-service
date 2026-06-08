@@ -17,7 +17,7 @@ async def test_json_mode_happy_path(client, api_headers, tmp_path):
             "app.routes.ingest.fetch_object_to_tempfile",
             return_value=fake_local,
         ),
-        patch("app.routes.ingest.run_indexing_pipeline", return_value=42) as run_mock,
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(42, None)) as run_mock,
     ):
         response = await client.put(
             "/api/v1/ingest",
@@ -48,6 +48,42 @@ async def test_json_mode_happy_path(client, api_headers, tmp_path):
     assert meta_arg["overwrite"] is True
     assert meta_arg["name"] == "report.pdf"
     assert meta_arg["source"] == "report.pdf"
+
+
+async def test_response_carries_extraction_info(client, api_headers, tmp_path):
+    """When the pipeline reports an auto-routing decision, it surfaces on the
+    response under ``extraction`` (engine + route signal/metrics)."""
+    fake_local = str(tmp_path / "fake.docx")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"PK-fake")
+
+    extraction = {"engine": "hybrid-diagram", "route": {"signal": "textbox", "ratio": 8.33}}
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch(
+            "app.routes.ingest.run_indexing_pipeline",
+            return_value=(5, extraction),
+        ),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/flow.docx",
+                "file_id": "abc",
+                "filename": "flow.docx",
+                "collection_name": "file-abc",
+                "collection_type": "file",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chunks_count"] == 5
+    assert body["extraction"]["engine"] == "hybrid-diagram"
+    assert body["extraction"]["route"]["signal"] == "textbox"
 
 
 async def test_json_mode_missing_s3_reference(client, api_headers):
@@ -81,7 +117,7 @@ async def test_multipart_mode_happy_path(client, api_headers):
         "overwrite": "true",
     }
 
-    with patch("app.routes.ingest.run_indexing_pipeline", return_value=7) as run_mock:
+    with patch("app.routes.ingest.run_indexing_pipeline", return_value=(7, None)) as run_mock:
         response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
 
     assert response.status_code == 200
@@ -259,7 +295,7 @@ async def test_s3_bucket_in_allowlist_allowed(client, api_headers, monkeypatch, 
 
     with (
         patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
-        patch("app.routes.ingest.run_indexing_pipeline", return_value=1),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(1, None)),
     ):
         response = await client.put(
             "/api/v1/ingest",
@@ -289,7 +325,7 @@ async def test_empty_allowlist_skips_enforcement(client, api_headers, monkeypatc
 
     with (
         patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
-        patch("app.routes.ingest.run_indexing_pipeline", return_value=1),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(1, None)),
     ):
         response = await client.put(
             "/api/v1/ingest",
@@ -381,7 +417,7 @@ async def test_user_memory_collection_must_match_user_id(client, api_headers, tm
 
     with (
         patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
-        patch("app.routes.ingest.run_indexing_pipeline", return_value=42) as run_mock,
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(42, None)) as run_mock,
     ):
         response = await client.put(
             "/api/v1/ingest",
@@ -411,7 +447,7 @@ async def test_user_memory_collection_matching_user_id_is_allowed(client, api_he
 
     with (
         patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
-        patch("app.routes.ingest.run_indexing_pipeline", return_value=3),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(3, None)),
     ):
         response = await client.put(
             "/api/v1/ingest",
@@ -438,7 +474,7 @@ async def test_file_collection_must_match_file_id(client, api_headers, tmp_path)
 
     with (
         patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
-        patch("app.routes.ingest.run_indexing_pipeline", return_value=42) as run_mock,
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(42, None)) as run_mock,
     ):
         response = await client.put(
             "/api/v1/ingest",
@@ -468,7 +504,7 @@ async def test_knowledge_collection_passes_through(client, api_headers, tmp_path
 
     with (
         patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
-        patch("app.routes.ingest.run_indexing_pipeline", return_value=5),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(5, None)),
     ):
         response = await client.put(
             "/api/v1/ingest",

@@ -33,6 +33,10 @@ dependencies = [
     # to the Gotenberg sidecar over httpx. Pillow encodes the rendered pages.
     "pypdfium2>=4.0",
     "pillow>=10.0",
+    # Observability: Prometheus client for the /metrics scrape endpoint and the
+    # in-process counters/histograms (ingest outcomes, per-stage latency,
+    # routing decisions). Single well-established lib; no scraper code here.
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

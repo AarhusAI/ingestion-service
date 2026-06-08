@@ -23,7 +23,7 @@ from haystack import Document, component
 from app.config import Settings
 from app.log_utils import sanitize_for_log
 from app.pipelines.converters import build_converter
-from app.pipelines.detectors import detect_engine
+from app.pipelines.detectors import RoutingDecision, classify_engine
 from app.pipelines.vision_profiles import KNOWN_PROFILES
 
 log = logging.getLogger(__name__)
@@ -79,7 +79,8 @@ class RoutingConverter:
     ) -> dict:
         docs: list[Document] = []
         for i, source in enumerate(sources):
-            engine = self._select_engine(source)
+            decision = self._classify(source)
+            engine = decision.engine
             converter = self._converters.get(engine) or self._converters[self._default_engine]
             source_meta = _meta_for(meta, i)
             # The diagram route pins the diagram profile; pass it only to a
@@ -87,10 +88,14 @@ class RoutingConverter:
             pinned_profile = (
                 engine == self._diagram_engine and getattr(converter, "accepts_profile", False)
             )
-            log.debug(
-                "routing %s -> engine=%s profile=%s",
+            # INFO (not DEBUG): the per-document routing decision is high-value
+            # operational signal, visible at the default level. The detailed
+            # metrics behind it stay on the decision (stamped into chunk meta).
+            log.info(
+                "routing %s -> engine=%s signal=%s profile=%s",
                 sanitize_for_log(Path(source).name),
                 engine,
+                decision.signal,
                 self._diagram_profile if pinned_profile else "-",
             )
             if pinned_profile:
@@ -99,13 +104,26 @@ class RoutingConverter:
                 )
             else:
                 result = converter.run(sources=[source], meta=source_meta)
-            docs.extend(result.get("documents", []))
+            # Stamp the decision onto every output document so it flows through
+            # chunk -> embed -> Qdrant (the splitter copies base meta), making
+            # "which engine, and why" answerable per document after the fact.
+            route_meta = {"signal": decision.signal, **decision.metrics}
+            for doc in result.get("documents", []):
+                doc.meta["extraction_engine"] = engine
+                doc.meta["extraction_route"] = route_meta
+                docs.append(doc)
         return {"documents": docs}
 
-    def _select_engine(self, source: str) -> str:
-        """Detected engine for ``source``, or the default — never raises."""
+    def _classify(self, source: str) -> RoutingDecision:
+        """Resolve the final routing decision for ``source`` — never raises.
+
+        Wraps :func:`classify_engine` (which is itself exception-safe for
+        routing reasons) and resolves the detector's engine (``None`` = default,
+        or a diagram-engine name) to a concrete engine we actually built. The
+        returned decision's ``engine`` is the one that will run.
+        """
         try:
-            decision = detect_engine(source, self._settings)
+            decision = classify_engine(source, self._settings)
         except Exception:
             log.warning(
                 "routing detection failed for %s; using default engine %s",
@@ -113,8 +131,16 @@ class RoutingConverter:
                 self._default_engine,
                 exc_info=True,
             )
-            return self._default_engine
-        return decision.lower() if decision else self._default_engine
+            return RoutingDecision(
+                engine=self._default_engine,
+                signal="default",
+                metrics={"error": "detection_failed"},
+            )
+        engine = (decision.engine or self._default_engine).lower()
+        # Defensive: a detected engine we didn't pre-build falls back to default.
+        if engine not in self._converters:
+            engine = self._default_engine
+        return RoutingDecision(engine=engine, signal=decision.signal, metrics=decision.metrics)
 
 
 def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:

@@ -12,6 +12,7 @@ from haystack import Document
 
 from app.config import Settings
 from app.pipelines import routing_converter as rc
+from app.pipelines.detectors import RoutingDecision
 
 
 def _settings(**overrides) -> Settings:
@@ -53,7 +54,7 @@ def test_routes_diagram_doc_to_diagram_engine():
     tika, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value="vision-llm"),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
     ):
         conv = rc.RoutingConverter(_settings())
         out = conv.run(sources=["x.docx"], meta={"file_id": "f1"})["documents"]
@@ -80,7 +81,9 @@ def test_routes_to_hybrid_diagram_engine_and_forwards_profile():
     s = _settings(extraction_router_diagram_engine="hybrid-diagram")
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value="hybrid-diagram"),
+        patch.object(
+            rc, "classify_engine", return_value=RoutingDecision("hybrid-diagram", "textbox")
+        ),
     ):
         out = rc.RoutingConverter(s).run(sources=["x.docx"], meta={})["documents"]
 
@@ -95,7 +98,7 @@ def test_routes_default_when_detection_returns_none():
     tika, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value=None),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
     ):
         conv = rc.RoutingConverter(_settings())
         out = conv.run(sources=["x.docx"], meta={})["documents"]
@@ -109,7 +112,7 @@ def test_detection_error_falls_back_to_default():
     tika, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", side_effect=ValueError("boom")),
+        patch.object(rc, "classify_engine", side_effect=ValueError("boom")),
     ):
         conv = rc.RoutingConverter(_settings())
         # Must not raise — the bad detector degrades to the default engine.
@@ -147,7 +150,7 @@ def test_meta_per_source_list_form():
     tika, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value=None),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
     ):
         conv = rc.RoutingConverter(_settings())
         conv.run(sources=["a.docx", "b.docx"], meta=[{"file_id": "1"}, {"file_id": "2"}])
@@ -160,7 +163,7 @@ def test_documents_are_concatenated_across_sources():
     _tika, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value=None),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
     ):
         conv = rc.RoutingConverter(_settings())
         out = conv.run(sources=["a.docx", "b.docx"], meta={})["documents"]
@@ -172,7 +175,7 @@ def test_diagram_route_forwards_diagram_profile():
     _tika, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value="vision-llm"),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
     ):
         conv = rc.RoutingConverter(_settings())
         conv.run(sources=["x.docx"], meta={})
@@ -185,7 +188,7 @@ def test_default_route_forwards_no_profile():
     tika, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value=None),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
     ):
         conv = rc.RoutingConverter(_settings())
         conv.run(sources=["x.docx"], meta={})
@@ -198,7 +201,7 @@ def test_custom_diagram_profile_is_honored():
     _tika, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value="vision-llm"),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
     ):
         conv = rc.RoutingConverter(_settings(extraction_router_diagram_profile="general"))
         conv.run(sources=["x.docx"], meta={})
@@ -225,7 +228,7 @@ def test_profile_not_passed_to_non_profile_aware_diagram_engine():
     )
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value="docling"),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision("docling", "textbox")),
     ):
         conv = rc.RoutingConverter(s)
         conv.run(sources=["x.docx"], meta={})
@@ -234,16 +237,34 @@ def test_profile_not_passed_to_non_profile_aware_diagram_engine():
     assert "profile" not in kwargs
 
 
-def test_debug_logs_routing_decision(caplog):
+def test_logs_routing_decision_at_info(caplog):
     _tika, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
-        patch.object(rc, "detect_engine", return_value="vision-llm"),
-        caplog.at_level(logging.DEBUG, logger="app.pipelines.routing_converter"),
+        patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
+        caplog.at_level(logging.INFO, logger="app.pipelines.routing_converter"),
     ):
         rc.RoutingConverter(_settings()).run(sources=["Diagram.docx"], meta={})
 
-    assert "routing Diagram.docx -> engine=vision-llm profile=diagram" in caplog.text
+    assert (
+        "routing Diagram.docx -> engine=vision-llm signal=textbox profile=diagram" in caplog.text
+    )
+
+
+def test_stamps_routing_decision_onto_document_meta():
+    """The router stamps the resolved engine + route (signal/metrics) onto each
+    output document's meta so it flows to Qdrant and the inspection endpoint."""
+    _tika, _vision, build = _fakes()
+    decision = RoutingDecision("vision-llm", "textbox", {"textboxes": 50, "ratio": 8.33})
+    with (
+        patch.object(rc, "build_converter", side_effect=build),
+        patch.object(rc, "classify_engine", return_value=decision),
+    ):
+        out = rc.RoutingConverter(_settings()).run(sources=["x.docx"], meta={})["documents"]
+
+    assert out[0].meta["extraction_engine"] == "vision-llm"
+    assert out[0].meta["extraction_route"]["signal"] == "textbox"
+    assert out[0].meta["extraction_route"]["textboxes"] == 50
 
 
 def test_invalid_diagram_profile_raises_at_construction():
