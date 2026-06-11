@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Error codes returned in IngestError.code
 ErrorCode = Literal[
@@ -16,6 +16,10 @@ ErrorCode = Literal[
 
 class IngestRequestJSON(BaseModel):
     """S3-reference mode body. Multipart mode uses raw form fields, not this model."""
+
+    # extra="forbid" so a typo'd field name (s3_buckt) is a 400 instead of a
+    # silently ignored no-op; strip whitespace so " " can't satisfy min_length.
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     file_id: str = Field(min_length=1)
     filename: str = Field(min_length=1)

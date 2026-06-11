@@ -88,6 +88,10 @@ class KreuzbergRemoteConverter:
             pool=connect_timeout,
         )
         self._verify = verify
+        # One pooled client for the component's lifetime — the converter is a
+        # process-lifetime singleton, so sidecar connections are reused instead
+        # of paying a TCP(+TLS) handshake per document.
+        self._client = httpx.Client(timeout=self._timeout, verify=self._verify)
 
     @component.output_types(documents=list[Document])
     def run(
@@ -111,12 +115,7 @@ class KreuzbergRemoteConverter:
                     # Field name must be ``files`` — verified against the
                     # 4.0.x API server. ``file`` returns 400 "No files provided".
                     files = {"files": (path.name, fh, content_type)}
-                    resp = httpx.post(
-                        self._url,
-                        files=files,
-                        timeout=self._timeout,
-                        verify=self._verify,
-                    )
+                    resp = self._client.post(self._url, files=files)
                 resp.raise_for_status()
             except httpx.HTTPError as exc:
                 # Typed so the route-layer classifier dispatches on isinstance
@@ -167,11 +166,18 @@ def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
       restores the pre-gate keep-all behaviour.
 
     Defensive against shape drift: accepts a bare object as well as the
-    canonical array, and returns the empty string if nothing usable is
-    in the payload (downstream all-or-nothing teardown handles failure).
+    canonical array, and returns the empty string if nothing usable is in the
+    payload. Empty content does NOT fail the ingest — it flows through to a
+    successful zero-chunk write — so the warning here (plus the zero-chunk
+    warning in ``indexing.py``) is the operator's signal that the sidecar's
+    response shape drifted.
     """
     result = _first_result(payload)
     if result is None:
+        log.warning(
+            "kreuzberg response had no usable extraction result (shape drift?); "
+            "treating as empty content"
+        )
         return ""
     body = result.get("content") if isinstance(result.get("content"), str) else ""
     tables = result.get("tables") if isinstance(result.get("tables"), list) else []

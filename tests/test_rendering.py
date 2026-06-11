@@ -21,7 +21,9 @@ def test_office_to_pdf_returns_bytes(tmp_path):
     resp = MagicMock()
     resp.content = b"%PDF-1.4 fake"
     resp.raise_for_status.return_value = None
-    with patch("app.pipelines.rendering.httpx.post", return_value=resp) as post:
+    # office_to_pdf posts via a pooled module-level httpx.Client; patch the
+    # class method so the cached instance is intercepted.
+    with patch("httpx.Client.post", return_value=resp) as post:
         out = rendering.office_to_pdf(str(f), gotenberg_url="http://gotenberg:3000")
     assert out == b"%PDF-1.4 fake"
     # Posts to the LibreOffice route as a multipart 'files' part.
@@ -34,7 +36,7 @@ def test_office_to_pdf_http_error_raises_extraction_error(tmp_path):
     f = tmp_path / "a.docx"
     f.write_bytes(b"docx-bytes")
     with (
-        patch("app.pipelines.rendering.httpx.post", side_effect=httpx.HTTPError("down")),
+        patch("httpx.Client.post", side_effect=httpx.HTTPError("down")),
         pytest.raises(ExtractionError, match="gotenberg"),
     ):
         rendering.office_to_pdf(str(f), gotenberg_url="http://gotenberg:3000")

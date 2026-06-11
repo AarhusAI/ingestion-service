@@ -18,13 +18,15 @@ from prometheus_client import Counter, Histogram
 
 log = logging.getLogger(__name__)
 
-# Ingest pipeline attempts by outcome. ``code`` is "none" on success, else the
-# IngestError.code the route classified (EXTRACTION_FAILED, EMBEDDING_FAILED,
-# QDRANT_WRITE_FAILED, …). Request-validation 4xx rejects (bad content-type,
-# disallowed bucket) are NOT counted here — this tracks pipeline outcomes.
+# Ingest requests by outcome. ``code`` is "none" on success, else the
+# IngestError.code from the failure response (EXTRACTION_FAILED,
+# S3_FETCH_FAILED, INVALID_REQUEST, …). Counted centrally in the ingest route
+# handler, so every failure class shows up — including S3 fetch errors and
+# request-validation rejects that never reach the pipeline. Auth failures
+# (401) happen in the dependency before the handler and are not counted.
 ingest_requests_total = Counter(
     "ingest_requests_total",
-    "Ingest pipeline attempts by outcome and classified error code.",
+    "Ingest requests by outcome and classified error code.",
     ["outcome", "code"],
 )
 
@@ -33,6 +35,15 @@ ingest_duration_seconds = Histogram(
     "ingest_duration_seconds",
     "Indexing pipeline wall-clock duration in seconds.",
     buckets=(0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
+)
+
+# Ingests that completed successfully but wrote zero chunks. The caller sees
+# status=true / chunks_count=0, so without this counter (and the paired
+# warning log) an extraction engine silently yielding nothing — e.g. a
+# sidecar response-shape drift — looks healthy on every dashboard.
+ingest_empty_total = Counter(
+    "ingest_empty_total",
+    "Successful ingests that wrote zero chunks (extraction produced no content).",
 )
 
 # Chunks written per ingested document.

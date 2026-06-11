@@ -15,6 +15,7 @@ multipart request schema and the docs page has nothing to render.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -94,7 +95,9 @@ async def extract(
     local_path = await stream_upload_to_tempfile(file)
 
     try:
-        documents = _run_converter(local_path, engine, profile)
+        # The converter call is synchronous and can be slow (sidecar HTTP,
+        # vision LLM) — offload so the event loop keeps serving other requests.
+        documents = await asyncio.to_thread(_run_converter, local_path, engine, profile)
     finally:
         with contextlib.suppress(OSError):
             os.unlink(local_path)

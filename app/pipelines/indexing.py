@@ -61,10 +61,12 @@ class IndexingResult(NamedTuple):
 # succeed) or no vectors (request A's teardown deletes request B's data
 # after B already finished). See sec.md Finding 7.
 #
-# Process-local: FastAPI runs sync handlers in a thread pool inside one
-# uvicorn worker process; multiple processes don't share state. Open WebUI's
-# per-file state machine gates same-file_id calls across processes upstream,
-# so a process-local lock is sufficient for the documented contract.
+# Process-local: the ingest route offloads each pipeline run to a worker
+# thread via asyncio.to_thread, so concurrent requests within one uvicorn
+# worker process run on real threads; multiple processes don't share state.
+# Open WebUI's per-file state machine gates same-file_id calls across
+# processes upstream, so a process-local lock is sufficient for the
+# documented contract.
 _file_id_locks_lock = threading.Lock()
 _file_id_locks: dict[str, list] = {}  # file_id -> [Lock, refcount]
 
@@ -249,6 +251,16 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
             chunks_count = result["writer"]["documents_written"]
             extraction = _extraction_summary(result)
             metrics.ingest_chunks.observe(chunks_count)
+            if chunks_count == 0:
+                # A zero-chunk ingest reports success to the caller, so this
+                # is the only operator-visible signal that extraction yielded
+                # nothing (e.g. a sidecar response-shape drift) — see
+                # ingest_empty_total for the aggregate.
+                metrics.ingest_empty_total.inc()
+                log.warning(
+                    "ingest wrote 0 chunks for file_id=%s — extraction produced no content",
+                    sanitize_for_log(file_id),
+                )
             if extraction:
                 metrics.extraction_route_total.labels(
                     engine=extraction["engine"],

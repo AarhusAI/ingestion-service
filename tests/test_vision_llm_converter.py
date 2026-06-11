@@ -14,7 +14,9 @@ from app.pipelines.errors import ExtractionError
 from app.pipelines.vision_llm_converter import VisionLLMConverter
 
 _RENDER = "app.pipelines.vision_llm_converter.render_to_pngs"
-_POST = "app.pipelines.vision_llm_converter.httpx.post"
+# The converter holds a pooled httpx.Client built in __init__; patch the class
+# method so that instance is intercepted.
+_POST = "httpx.Client.post"
 
 
 def _conv(**overrides):

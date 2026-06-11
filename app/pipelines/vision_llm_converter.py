@@ -83,6 +83,10 @@ class VisionLLMConverter:
             pool=connect_timeout,
         )
         self._verify = tls_verify
+        # One pooled client for the component's lifetime — the converter is a
+        # process-lifetime singleton, so connections to the VLM endpoint are
+        # reused instead of paying a TCP(+TLS) handshake per document.
+        self._client = httpx.Client(timeout=self._timeout, verify=self._verify)
         self._dpi = dpi
         self._max_pages = max_pages
         self._max_tokens = max_tokens
@@ -211,13 +215,7 @@ class VisionLLMConverter:
         # Never interpolate the Authorization header into any exception message.
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
         try:
-            resp = httpx.post(
-                self._url,
-                json=payload,
-                headers=headers,
-                timeout=self._timeout,
-                verify=self._verify,
-            )
+            resp = self._client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise ExtractionError(f"vision-llm request failed for {filename}: {exc}") from exc
