@@ -85,14 +85,21 @@ class Settings(BaseSettings):
     # ----- Server -----
     host: str = "0.0.0.0"
     port: int = 8000
+    # Operator-triage switch (NOT a logging dial — see LOG_LEVEL_APP for that).
+    # When true, ingest error responses reflect ``str(exc)`` instead of a fixed
+    # safe message, so local debugging sees the real failure. Leave false in
+    # production: the raw text can carry hostnames, paths, and AWS request IDs.
     debug: bool = False
 
     # ----- Logging / observability -----
     # LOG_LEVEL is the primary verbosity dial. DEBUG | INFO | WARNING | ERROR |
     # CRITICAL — applied to the root logger (so third-party libs follow it too).
-    # DEBUG=true still force-bumps just the ``app`` namespace to DEBUG for
-    # backward compatibility, without flooding third-party loggers.
     log_level: str = "INFO"
+    # Per-namespace override for the service's own loggers (``app.*``), applied
+    # on top of LOG_LEVEL. Lets you run verbose app logs (e.g. routing detector
+    # metrics) without the third-party DEBUG flood (httpx/boto3/haystack).
+    # Empty = inherit the root level. DEBUG | INFO | WARNING | ERROR | CRITICAL.
+    log_level_app: str = ""
     # text = human-readable single line (the historical format); json = one
     # JSON object per line for Loki / a structured-log pipeline.
     log_format: str = "text"
@@ -114,6 +121,19 @@ class Settings(BaseSettings):
         upper = v.upper()
         if upper not in allowed:
             raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}; got {v!r}")
+        return upper
+
+    @field_validator("log_level_app")
+    @classmethod
+    def _validate_log_level_app(cls, v: str) -> str:
+        if not v:
+            return ""
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper = v.upper()
+        if upper not in allowed:
+            raise ValueError(
+                f"LOG_LEVEL_APP must be one of {sorted(allowed)} or empty; got {v!r}"
+            )
         return upper
 
     @field_validator("log_format")

@@ -34,13 +34,13 @@ def test_log_level_sets_root_level():
     assert logging.getLogger().level == logging.WARNING
 
 
-def test_debug_forces_app_namespace_to_debug():
-    configure_logging(_settings(log_level="INFO", debug=True))
+def test_log_level_app_overrides_app_namespace():
+    configure_logging(_settings(log_level="INFO", log_level_app="DEBUG"))
     assert logging.getLogger("app").level == logging.DEBUG
 
 
-def test_debug_off_does_not_pin_app_namespace():
-    configure_logging(_settings(log_level="INFO", debug=False))
+def test_log_level_app_empty_inherits_root():
+    configure_logging(_settings(log_level="INFO", log_level_app=""))
     assert logging.getLogger("app").level == logging.NOTSET
 
 
