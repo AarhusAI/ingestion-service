@@ -36,16 +36,72 @@ class IngestRequestJSON(BaseModel):
         return self
 
 
+class ExtractionInfo(BaseModel):
+    """How the document was extracted, surfaced on the ingest response.
+
+    ``engine`` is the engine that ran. ``route`` carries the auto-router's
+    signal + measured metrics (``{"signal": ..., "textboxes": ..., "ratio": ...}``)
+    when ``EXTRACTION_ENGINE=auto``; it is ``None`` for a pinned engine, where
+    no classification step runs.
+    """
+
+    engine: str
+    route: dict | None = None
+
+
 class IngestResponse(BaseModel):
     status: bool = True
     collection_name: str
     chunks_count: int
+    # Omitted from the JSON when None (route sets response_model_exclude_none),
+    # so the historical {status, collection_name, chunks_count} contract holds
+    # for callers that don't care about extraction details.
+    extraction: ExtractionInfo | None = None
 
 
 class IngestError(BaseModel):
     status: bool = False
     error: str
     code: ErrorCode
+
+
+class ChunkView(BaseModel):
+    """One stored chunk, flattened for the inspection endpoint."""
+
+    split_id: int | None = None
+    content_length: int
+    # Present per the ``include_content`` query param: full text, a preview, or
+    # omitted entirely (None).
+    content: str | None = None
+    meta: dict = Field(default_factory=dict)
+
+
+class DocumentChunkStats(BaseModel):
+    """Document-level summary for the inspection endpoint.
+
+    The doc-level fields (engine, route, languages, name) are identical across a
+    document's chunks, so they're read from the first returned chunk.
+    """
+
+    total_chunks: int
+    extraction_engine: str | None = None
+    extraction_route: dict | None = None
+    languages: list[str] | None = None
+    name: str | None = None
+    collection_name: str | None = None
+
+
+class DocumentChunksResponse(BaseModel):
+    """Response body of ``GET /api/v1/documents/{file_id}/chunks``."""
+
+    status: bool = True
+    file_id: str
+    returned: int
+    limit: int
+    # Qdrant cursor for the next page; None when the document is exhausted.
+    next_offset: str | None = None
+    stats: DocumentChunkStats
+    chunks: list[ChunkView]
 
 
 class ExtractedDocument(BaseModel):

@@ -20,10 +20,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
+from app import metrics
 from app.auth import verify_api_key
 from app.config import settings
 from app.log_utils import sanitize_for_log
-from app.models import IngestError, IngestRequestJSON, IngestResponse
+from app.models import ExtractionInfo, IngestError, IngestRequestJSON, IngestResponse
 from app.pipelines.indexing import run_indexing_pipeline
 from app.services.filenames import safe_suffix
 from app.services.s3 import S3ObjectTooLarge, fetch_object_to_tempfile
@@ -36,6 +37,9 @@ router = APIRouter()
 @router.put(
     "/api/v1/ingest",
     response_model=IngestResponse,
+    # extraction is None for pinned engines / mocked tests → omit it so the
+    # historical {status, collection_name, chunks_count} body is unchanged.
+    response_model_exclude_none=True,
     responses={
         400: {"model": IngestError},
         413: {"model": IngestError},
@@ -75,14 +79,17 @@ async def ingest(
 
     try:
         _validate_collection_binding(meta)
-        chunks = _run_pipeline_with_error_mapping(local_path, meta)
+        metrics.ingest_document_bytes.observe(_safe_size(local_path))
+        chunks, extraction = _run_pipeline_with_error_mapping(local_path, meta)
     finally:
         with contextlib.suppress(OSError):
             os.unlink(local_path)
 
+    metrics.ingest_requests_total.labels(outcome="success", code="none").inc()
     return IngestResponse(
         collection_name=meta["collection_name"],
         chunks_count=chunks,
+        extraction=ExtractionInfo(**extraction) if extraction else None,
     )
 
 
@@ -295,14 +302,28 @@ def _validate_collection_binding(meta: dict[str, Any]) -> None:
             )
 
 
-def _run_pipeline_with_error_mapping(file_path: str, meta: dict[str, Any]) -> int:
-    """Map exception types from the pipeline to ingestion error codes."""
+def _safe_size(path: str) -> int:
+    """Best-effort byte size of the local file for the size histogram."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _run_pipeline_with_error_mapping(
+    file_path: str, meta: dict[str, Any]
+) -> tuple[int, dict | None]:
+    """Run the pipeline, mapping exceptions to ingestion error codes.
+
+    Returns ``(chunks_count, extraction)`` from :func:`run_indexing_pipeline`.
+    """
     try:
         return run_indexing_pipeline(file_path, meta)
     except HTTPException:
         raise
     except Exception as exc:
         code = _classify_pipeline_error(exc)
+        metrics.ingest_requests_total.labels(outcome="error", code=code).inc()
         log.exception(
             "pipeline failure (%s) for file_id=%s",
             code,

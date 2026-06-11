@@ -8,7 +8,7 @@ import logging
 import zipfile
 
 from app.config import Settings
-from app.pipelines.detectors import detect_engine, docx_diagram_profile
+from app.pipelines.detectors import classify_engine, detect_engine, docx_diagram_profile
 
 
 def _settings(**overrides) -> Settings:
@@ -231,3 +231,46 @@ def test_docx_diagram_profile_raster_is_figure(tmp_path):
 
 def test_docx_diagram_profile_missing_file_defaults_to_topology():
     assert docx_diagram_profile("/nonexistent/x.docx", _settings()) == "diagram-topology"
+
+
+# ----- classify_engine: full decision (engine + signal + metrics) -----
+
+
+def test_classify_engine_textbox_signal_with_metrics(tmp_path):
+    xml = f"<w:document><w:body>{_textboxes(50)}</w:body></w:document>"
+    src = _write_docx(tmp_path, xml, app_words=5)
+    decision = classify_engine(src, _settings())
+    assert decision.engine == "vision-llm"
+    assert decision.signal == "textbox"
+    assert decision.metrics["textboxes"] == 50
+    assert decision.metrics["body_words"] == 5
+    assert decision.metrics["ratio"] > 2.0
+
+
+def test_classify_engine_raster_signal_with_metrics(tmp_path):
+    xml = f"<w:document><w:body>{_image_drawing(*_REAL_DIAGRAM)}</w:body></w:document>"
+    src = _write_docx(tmp_path, xml, app_words=1536)
+    decision = classify_engine(src, _settings())
+    assert decision.engine == "vision-llm"
+    assert decision.signal == "raster"
+    assert decision.metrics["image_count"] == 1
+    assert decision.metrics["max_image_emu"] > 0
+
+
+def test_classify_engine_default_carries_metrics(tmp_path):
+    # Enough textboxes to be measured, but the ratio is below the gate → default
+    # decision, but the measured numbers are still surfaced ("why default").
+    body = "<w:p><w:r><w:t>" + ("word " * 100) + "</w:t></w:r></w:p>" + _textboxes(20)
+    xml = f"<w:document><w:body>{body}</w:body></w:document>"
+    src = _write_docx(tmp_path, xml, app_words=100)
+    decision = classify_engine(src, _settings())
+    assert decision.engine is None
+    assert decision.signal == "default"
+    assert decision.metrics["textboxes"] == 20
+
+
+def test_classify_engine_non_docx_is_default():
+    decision = classify_engine("notes.txt", _settings())
+    assert decision.engine is None
+    assert decision.signal == "default"
+    assert decision.metrics == {}

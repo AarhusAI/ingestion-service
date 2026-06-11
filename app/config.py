@@ -87,6 +87,43 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
+    # ----- Logging / observability -----
+    # LOG_LEVEL is the primary verbosity dial. DEBUG | INFO | WARNING | ERROR |
+    # CRITICAL — applied to the root logger (so third-party libs follow it too).
+    # DEBUG=true still force-bumps just the ``app`` namespace to DEBUG for
+    # backward compatibility, without flooding third-party loggers.
+    log_level: str = "INFO"
+    # text = human-readable single line (the historical format); json = one
+    # JSON object per line for Loki / a structured-log pipeline.
+    log_format: str = "text"
+    # Expose Prometheus metrics at ``GET /metrics``. Unauthenticated by design
+    # (same trust model as /health — internal network only); when false the
+    # endpoint returns 404. Instrumentation always runs regardless; this only
+    # gates exposure.
+    metrics_enabled: bool = True
+    # Expose the read-only chunk-inspection endpoint
+    # (``GET /api/v1/documents/{file_id}/chunks``). It returns chunk *content*,
+    # so it's opt-in; when false the endpoint returns 404. Bearer-auth applies
+    # either way.
+    enable_inspection_api: bool = False
+
+    @field_validator("log_level")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper = v.upper()
+        if upper not in allowed:
+            raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}; got {v!r}")
+        return upper
+
+    @field_validator("log_format")
+    @classmethod
+    def _validate_log_format(cls, v: str) -> str:
+        lower = v.lower()
+        if lower not in {"text", "json"}:
+            raise ValueError(f"LOG_FORMAT must be 'text' or 'json'; got {v!r}")
+        return lower
+
     # Per-request upload size cap, in bytes. Applies to the multipart file
     # part (enforced by stream_upload_to_tempfile) and to S3 fetches
     # (enforced by a head_object size check). Default 100 MB — large enough

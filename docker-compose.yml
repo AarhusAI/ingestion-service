@@ -33,6 +33,11 @@ services:
       API_KEY: "${API_KEY:?API_KEY must be set in .env or .env.local}"
       DEBUG: ${DEBUG:-false}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
+      # Logging / observability
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      ENABLE_INSPECTION_API: ${ENABLE_INSPECTION_API:-false}
       # Extraction
       EXTRACTION_ENGINE: ${EXTRACTION_ENGINE:-auto}
       TIKA_URL: ${TIKA_URL:-http://tika:9998}

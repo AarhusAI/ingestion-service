@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from typing import NamedTuple
 
 from haystack import Pipeline
 from haystack.components.writers import DocumentWriter
@@ -23,6 +24,7 @@ from haystack.utils import Secret
 from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
+from app import metrics
 from app.config import Settings
 from app.config import settings as global_settings
 from app.log_utils import sanitize_for_log
@@ -35,6 +37,23 @@ log = logging.getLogger(__name__)
 
 _pipeline: Pipeline | None = None
 _document_store: QdrantDocumentStore | None = None
+# Settings used to build the cached pipeline — kept so request-time helpers
+# (e.g. the extraction summary) can read the active engine without threading
+# settings through every call.
+_settings: Settings | None = None
+
+
+class IndexingResult(NamedTuple):
+    """Outcome of one ``run_indexing_pipeline`` call.
+
+    ``extraction`` is ``{"engine": str, "route": dict | None}`` — ``route`` is
+    the auto-router's signal+metrics when ``EXTRACTION_ENGINE=auto`` stamped
+    them onto the documents, else ``None`` (pinned engine: no classification).
+    """
+
+    chunks_count: int
+    extraction: dict | None
+
 
 # Per-file_id locks serialize concurrent ingests of the same file. Without
 # this, two requests racing on the same file_id can interleave the
@@ -88,8 +107,9 @@ def init_pipeline(settings: Settings | None = None) -> None:
     Moving it here means startup takes longer but per-request latency
     is predictable.
     """
-    global _pipeline, _document_store
+    global _pipeline, _document_store, _settings
     s = settings or global_settings
+    _settings = s
     _document_store = _build_document_store(s)
     _pipeline = _build_pipeline(s, _document_store)
 
@@ -154,30 +174,47 @@ def _build_converter_for_pipeline(s: Settings):
 
 def _build_pipeline(s: Settings, document_store: QdrantDocumentStore) -> Pipeline:
     pipeline = Pipeline()
-    pipeline.add_component("converter", _build_converter_for_pipeline(s))
+    # Each component's run is wrapped to record per-stage latency
+    # (pipeline_stage_duration_seconds{stage=...}); instrument_stage is a no-op
+    # passthrough if wrapping ever fails, so it can't break the pipeline.
+    pipeline.add_component(
+        "converter", metrics.instrument_stage(_build_converter_for_pipeline(s), "converter")
+    )
     # Token-aware splitter when chunk_split_by="token" (default), Haystack's
     # word/sentence/passage DocumentSplitter otherwise. See app/pipelines/splitter.py.
-    pipeline.add_component("splitter", build_splitter(s))
-    pipeline.add_component("dense_embedder", build_dense_embedder(s))
+    pipeline.add_component("splitter", metrics.instrument_stage(build_splitter(s), "splitter"))
+    pipeline.add_component(
+        "dense_embedder", metrics.instrument_stage(build_dense_embedder(s), "dense_embedder")
+    )
 
     pipeline.connect("converter.documents", "splitter.documents")
     pipeline.connect("splitter.documents", "dense_embedder.documents")
 
     sparse = build_sparse_embedder(s)
     if sparse is not None:
-        pipeline.add_component("sparse_embedder", sparse)
-        pipeline.add_component("writer", DocumentWriter(document_store=document_store))
+        pipeline.add_component(
+            "sparse_embedder", metrics.instrument_stage(sparse, "sparse_embedder")
+        )
+        pipeline.add_component(
+            "writer",
+            metrics.instrument_stage(DocumentWriter(document_store=document_store), "writer"),
+        )
         pipeline.connect("dense_embedder.documents", "sparse_embedder.documents")
         pipeline.connect("sparse_embedder.documents", "writer.documents")
     else:
-        pipeline.add_component("writer", DocumentWriter(document_store=document_store))
+        pipeline.add_component(
+            "writer",
+            metrics.instrument_stage(DocumentWriter(document_store=document_store), "writer"),
+        )
         pipeline.connect("dense_embedder.documents", "writer.documents")
 
     return pipeline
 
 
-def run_indexing_pipeline(file_path: str, meta: dict) -> int:
-    """Run the configured pipeline against a single local file. Returns chunk count.
+def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
+    """Run the configured pipeline against a single local file.
+
+    Returns an :class:`IndexingResult` (chunk count + extraction summary).
 
     ``meta`` carries the document metadata (``file_id``, ``collection_name``,
     ``collection_type``, ``name``, ``source``, ``user_id``, ``overwrite``).
@@ -199,15 +236,34 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> int:
 
         pipeline_meta = _strip_control_fields(meta)
         try:
-            result = _pipeline.run({"converter": {"sources": [file_path], "meta": pipeline_meta}})
+            started = time.monotonic()
+            # include_outputs_from exposes the converter's stamped meta (the
+            # auto-router writes extraction_engine / extraction_route there) so
+            # the decision surfaces in the response without an extra pass.
+            result = _pipeline.run(
+                {"converter": {"sources": [file_path], "meta": pipeline_meta}},
+                include_outputs_from={"converter"},
+            )
+            metrics.ingest_duration_seconds.observe(time.monotonic() - started)
+
             chunks_count = result["writer"]["documents_written"]
+            extraction = _extraction_summary(result)
+            metrics.ingest_chunks.observe(chunks_count)
+            if extraction:
+                metrics.extraction_route_total.labels(
+                    engine=extraction["engine"],
+                    signal=(extraction["route"] or {}).get("signal", "default"),
+                ).inc()
+
             log.info(
-                "ingest ok: file_id=%s collection=%s chunks=%d",
+                "ingest ok: file_id=%s collection=%s chunks=%d engine=%s signal=%s",
                 sanitize_for_log(file_id),
                 sanitize_for_log(meta.get("collection_name")),
                 chunks_count,
+                extraction["engine"] if extraction else "-",
+                (extraction["route"] or {}).get("signal", "-") if extraction else "-",
             )
-            return chunks_count
+            return IndexingResult(chunks_count=chunks_count, extraction=extraction)
         except Exception:
             log.exception(
                 "ingest failed for file_id=%s; rolling back",
@@ -217,15 +273,30 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> int:
             raise
 
 
+def _extraction_summary(result: dict) -> dict | None:
+    """Derive ``{"engine", "route"}`` from the pipeline result.
+
+    Reads the converter's stamped meta (``extraction_engine`` /
+    ``extraction_route``) captured via ``include_outputs_from``. For a pinned
+    engine the router never ran, so nothing is stamped — fall back to the
+    configured engine with no route.
+    """
+    docs = (result.get("converter") or {}).get("documents") or []
+    meta0 = (docs[0].meta if docs else {}) or {}
+    engine = meta0.get("extraction_engine")
+    route = meta0.get("extraction_route")
+    if engine is None:
+        engine = _settings.extraction_engine if _settings is not None else "unknown"
+    return {"engine": engine, "route": route}
+
+
 def _delete_existing_by_file_id(file_id: str) -> None:
     if _document_store is None:
         return
     try:
         _document_store.client.delete(
             collection_name=_document_store.index,
-            points_selector=Filter(
-                must=[FieldCondition(key="meta.file_id", match=MatchValue(value=file_id))]
-            ),
+            points_selector=_file_id_filter(file_id),
         )
     except Exception:
         # If the collection doesn't exist yet (first ever ingest), this is fine.
@@ -233,6 +304,45 @@ def _delete_existing_by_file_id(file_id: str) -> None:
             "delete-by-file_id skipped (collection likely empty): file_id=%s",
             sanitize_for_log(file_id),
         )
+
+
+def _file_id_filter(file_id: str) -> Filter:
+    """The Qdrant filter for every point belonging to one file — the single
+    contract shared by delete, count, and the chunk-inspection scroll."""
+    return Filter(must=[FieldCondition(key="meta.file_id", match=MatchValue(value=file_id))])
+
+
+def count_chunks_by_file_id(file_id: str) -> int:
+    """Exact count of stored chunks for ``file_id`` (read-only; used by the
+    chunk-inspection endpoint). Raises if the pipeline isn't initialized."""
+    if _document_store is None:
+        raise RuntimeError("pipeline not initialized; call init_pipeline() first")
+    result = _document_store.client.count(
+        collection_name=_document_store.index,
+        count_filter=_file_id_filter(file_id),
+        exact=True,
+    )
+    return result.count
+
+
+def scroll_chunks_by_file_id(file_id: str, limit: int, offset: str | None = None):
+    """Page through stored chunks for ``file_id`` (read-only).
+
+    Returns ``(points, next_offset)`` straight from Qdrant's cursor-based
+    ``scroll``: ``points`` carry ``payload`` (content + meta), no vectors;
+    ``next_offset`` is the cursor for the next page (``None`` when exhausted).
+    Raises if the pipeline isn't initialized.
+    """
+    if _document_store is None:
+        raise RuntimeError("pipeline not initialized; call init_pipeline() first")
+    return _document_store.client.scroll(
+        collection_name=_document_store.index,
+        scroll_filter=_file_id_filter(file_id),
+        limit=limit,
+        offset=offset,
+        with_payload=True,
+        with_vectors=False,
+    )
 
 
 def _strip_control_fields(meta: dict) -> dict:

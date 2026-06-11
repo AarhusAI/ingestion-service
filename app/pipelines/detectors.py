@@ -33,12 +33,31 @@ from __future__ import annotations
 import logging
 import re
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.config import Settings
 from app.log_utils import sanitize_for_log
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    """The full per-document routing decision, not just the chosen engine.
+
+    ``engine`` is the engine to route to, or ``None`` to mean "use the router's
+    default" (detectors don't know the router's default engine). ``signal`` is
+    which heuristic fired — ``"textbox"`` (vector flowchart), ``"raster"``
+    (large embedded figure), or ``"default"`` (neither). ``metrics`` carries the
+    measured numbers behind the decision (textbox/body-word counts, ratio,
+    image area …) so "why this engine" is inspectable downstream.
+    """
+
+    engine: str | None
+    signal: str
+    metrics: dict = field(default_factory=dict)
+
 
 # Drawing/text-box markers. Substring ``.count()`` on the conventional prefixed
 # tag names is namespace-stable (Word always emits these prefixes) and far
@@ -81,28 +100,48 @@ _TEXTBOX_REGION_RE = re.compile(
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
-def detect_engine(source: str, settings: Settings) -> str | None:
-    """Return an engine name to route ``source`` to, or ``None`` for the default."""
+def classify_engine(source: str, settings: Settings) -> RoutingDecision:
+    """Full routing decision for ``source`` (engine + signal + metrics).
+
+    Never raises for routing reasons — on any structural surprise it returns a
+    ``"default"`` decision so the caller falls back safely.
+    """
     ext = Path(source).suffix.lower()
     if ext == ".docx":
-        return _detect_docx(source, settings)
+        return _classify_docx(source, settings)
     # PDF hook (future: scanned/image-ratio detection). Everything else passes
     # through to the router default.
-    return None
+    return RoutingDecision(engine=None, signal="default")
 
 
-def _detect_docx(source: str, settings: Settings) -> str | None:
+def detect_engine(source: str, settings: Settings) -> str | None:
+    """Engine name to route ``source`` to, or ``None`` for the default.
+
+    Thin back-compat wrapper over :func:`classify_engine` — kept so callers that
+    only need the engine name don't have to unpack the decision.
+    """
+    return classify_engine(source, settings).engine
+
+
+def _classify_docx(source: str, settings: Settings) -> RoutingDecision:
     parts = _read_docx_xml(source)
     if parts is None:
-        return None
+        return RoutingDecision(engine=None, signal="default", metrics={"docx_read": "failed"})
     document_xml, app_xml = parts
     name = sanitize_for_log(Path(source).name)
     # Vector flowchart first (higher fidelity — labels are real text), then the
     # raster fallback. Both route to the same diagram engine; the converter picks
     # the right vision profile via ``docx_diagram_profile``.
-    return _detect_textbox(document_xml, app_xml, settings, name) or _detect_raster(
-        document_xml, app_xml, settings, name
-    )
+    textbox = _detect_textbox(document_xml, app_xml, settings, name)
+    if textbox and textbox.engine:
+        return textbox
+    raster = _detect_raster(document_xml, app_xml, settings, name)
+    if raster and raster.engine:
+        return raster
+    # Neither signal fired → default, but surface whatever was measured so the
+    # "why default" is visible to the inspection endpoint / logs.
+    merged = {**(textbox.metrics if textbox else {}), **(raster.metrics if raster else {})}
+    return RoutingDecision(engine=None, signal="default", metrics=merged)
 
 
 def _read_docx_xml(source: str) -> tuple[str, str] | None:
@@ -126,18 +165,20 @@ def _read_docx_xml(source: str) -> tuple[str, str] | None:
 
 def _detect_textbox(
     document_xml: str, app_xml: str, settings: Settings, name: str
-) -> str | None:
-    """Vector-flowchart signal: drawing/textbox text vastly outweighs body text."""
+) -> RoutingDecision | None:
+    """Vector-flowchart signal: drawing/textbox text vastly outweighs body text.
+
+    Returns ``None`` when there aren't enough drawing shapes to even consider
+    the signal, a fired ``"textbox"`` decision when the ratio clears the gate,
+    or a ``"default"`` decision (carrying the measured metrics) otherwise.
+    """
     drawing_text_units = sum(document_xml.count(tag) for tag in _TEXTBOX_TAGS)
     if drawing_text_units < settings.extraction_router_min_textboxes:
         return None
     body_words = _body_word_count(document_xml, app_xml)
     ratio = drawing_text_units / (body_words + 1)
-    decision = (
-        settings.extraction_router_diagram_engine
-        if ratio >= settings.extraction_router_drawing_ratio
-        else "default"
-    )
+    fired = ratio >= settings.extraction_router_drawing_ratio
+    decision = settings.extraction_router_diagram_engine if fired else "default"
     log.debug(
         "docx routing %s: textboxes=%d body_words=%d ratio=%.2f (min=%d drawing_ratio=%.2f) -> %s",
         name,
@@ -148,20 +189,31 @@ def _detect_textbox(
         settings.extraction_router_drawing_ratio,
         decision,
     )
-    if ratio >= settings.extraction_router_drawing_ratio:
-        return settings.extraction_router_diagram_engine
-    return None
+    metrics = {
+        "textboxes": drawing_text_units,
+        "body_words": body_words,
+        "ratio": round(ratio, 3),
+    }
+    if fired:
+        return RoutingDecision(
+            engine=settings.extraction_router_diagram_engine, signal="textbox", metrics=metrics
+        )
+    return RoutingDecision(engine=None, signal="default", metrics=metrics)
 
 
 def _detect_raster(
     document_xml: str, app_xml: str, settings: Settings, name: str
-) -> str | None:
+) -> RoutingDecision | None:
     """Raster-figure signal: a body image rendered large enough to be content.
 
     Counts embedded body images and thresholds on the LARGEST image's display
     area (``<wp:extent>``, EMU²) — max not sum, so many small inline icons can't
     add up to a false trigger. Header/footer logos never reach here (we read only
     ``word/document.xml``).
+
+    Returns ``None`` when there are too few body images to consider, a fired
+    ``"raster"`` decision when the area (and optional word-ratio gate) clears,
+    or a ``"default"`` decision carrying the measured metrics otherwise.
     """
     image_count = sum(document_xml.count(tag) for tag in _IMAGE_TAGS)
     if image_count < settings.extraction_router_min_body_images:
@@ -171,6 +223,7 @@ def _detect_raster(
         default=0,
     )
     sq_in = max_area / _EMU_PER_SQ_INCH
+    metrics = {"image_count": image_count, "max_image_emu": max_area, "sq_in": round(sq_in, 3)}
     if max_area < settings.extraction_router_min_image_emu:
         log.debug(
             "docx routing %s: images=%d max_image_emu=%d (%.2f in²) < min=%d -> default",
@@ -180,11 +233,12 @@ def _detect_raster(
             sq_in,
             settings.extraction_router_min_image_emu,
         )
-        return None
+        return RoutingDecision(engine=None, signal="default", metrics=metrics)
     # Optional guard against a lone large decorative photo in a prose-heavy doc.
     if settings.extraction_router_min_image_word_ratio > 0:
         body_words = _body_word_count(document_xml, app_xml)
         word_ratio = max_area / (body_words + 1)
+        metrics["word_ratio"] = round(word_ratio, 1)
         if word_ratio < settings.extraction_router_min_image_word_ratio:
             log.debug(
                 "docx routing %s: images=%d max_image_emu=%d word_ratio=%.0f < min_ratio=%.0f "
@@ -195,7 +249,7 @@ def _detect_raster(
                 word_ratio,
                 settings.extraction_router_min_image_word_ratio,
             )
-            return None
+            return RoutingDecision(engine=None, signal="default", metrics=metrics)
     log.debug(
         "docx routing %s: images=%d max_image_emu=%d (%.2f in²) >= min=%d -> %s",
         name,
@@ -205,7 +259,9 @@ def _detect_raster(
         settings.extraction_router_min_image_emu,
         settings.extraction_router_diagram_engine,
     )
-    return settings.extraction_router_diagram_engine
+    return RoutingDecision(
+        engine=settings.extraction_router_diagram_engine, signal="raster", metrics=metrics
+    )
 
 
 def _body_word_count(document_xml: str, app_xml: str) -> int:

@@ -286,6 +286,24 @@ overwrite=true
 }
 ```
 
+With `EXTRACTION_ENGINE=auto`, the response also carries an `extraction` object
+recording which engine handled the document and why:
+
+```json
+{
+  "status": true,
+  "collection_name": "file-abc",
+  "chunks_count": 42,
+  "extraction": {
+    "engine": "hybrid-diagram",
+    "route": {"signal": "textbox", "textboxes": 50, "body_words": 5, "ratio": 8.33}
+  }
+}
+```
+
+`route` is `null` (and the whole `extraction` object omitted) for a pinned
+engine, where no classification step runs.
+
 #### Error
 
 ```json
@@ -369,6 +387,73 @@ runtime). Note that `engine=unstructured` is wired in but its converter uses
 a `paths=` input socket Haystack's pipeline doesn't currently route to — the
 ingest pipeline has the same limitation; this endpoint will surface it as
 `EXTRACTION_FAILED`.
+
+### `GET /api/v1/documents/{file_id}/chunks`
+
+Read-only chunk inspection — answers "what did this document get split into,
+and which extraction/classification path did it hit?" by reading the stored
+points back from Qdrant (`meta.file_id` filter). Off by default; enable with
+`ENABLE_INSPECTION_API=true`. Same Bearer-token auth as `/api/v1/ingest`; when
+disabled it returns `404`.
+
+Query params: `limit` (1–1000, default 50), `offset` (the `next_offset` cursor
+from a previous response), `include_content` (`false | preview | full`, default
+`preview` — first 200 chars).
+
+```shell
+curl -H "Authorization: Bearer $API_KEY" \
+  "http://localhost:8000/api/v1/documents/abc/chunks?include_content=preview"
+```
+
+```json
+{
+  "status": true,
+  "file_id": "abc",
+  "returned": 42,
+  "limit": 50,
+  "stats": {
+    "total_chunks": 42,
+    "extraction_engine": "hybrid-diagram",
+    "extraction_route": {"signal": "textbox", "ratio": 8.33},
+    "languages": ["da"],
+    "name": "flow.docx",
+    "collection_name": "file-abc"
+  },
+  "chunks": [
+    {"split_id": 0, "content_length": 380, "content": "…", "meta": {"headers": ["Intro"], "page": 1}}
+  ]
+}
+```
+
+## Observability
+
+Four independently-toggleable layers of insight into how documents are ingested:
+
+- **Log verbosity** — `LOG_LEVEL` (`DEBUG | INFO | WARNING | ERROR | CRITICAL`)
+  is the primary dial. The per-document routing decision logs at **INFO**
+  (`routing X.docx -> engine=… signal=… profile=…`); the detailed detector
+  metrics (textbox counts, ratios, image area) log at **DEBUG**. `DEBUG=true`
+  remains a back-compat shortcut that bumps only the `app` namespace to DEBUG
+  and reflects `str(exc)` in error responses.
+- **Structured logs** — `LOG_FORMAT=json` emits one JSON object per line
+  (`ts`, `level`, `logger`, `msg`, plus any structured `extra=` fields) for
+  Loki / a JSON-aware log pipeline. `text` (default) keeps the human format.
+- **Classification visibility** — which engine each document hit, and why, is
+  surfaced three ways: the INFO log line, the ingest response's `extraction`
+  object, and persisted onto every chunk's `meta` (`extraction_engine`,
+  `extraction_route`) so it's queryable after the fact via the inspection
+  endpoint.
+- **Prometheus metrics** — `GET /metrics` (set `METRICS_ENABLED=true`, the
+  default; `false` → 404). Bearer-authenticated with the same `API_KEY` as
+  `/api/v1/ingest` (mirrors retrieval-agent) — the scrape job must send
+  `Authorization: Bearer <API_KEY>`. Exposes:
+  `ingest_requests_total{outcome,code}`, `ingest_duration_seconds`,
+  `ingest_chunks`, `ingest_document_bytes`,
+  `extraction_route_total{engine,signal}`, and
+  `pipeline_stage_duration_seconds{stage}` (per component — the `dense_embedder`
+  stage is the bottleneck under load).
+- **Chunk inspection** — `GET /api/v1/documents/{file_id}/chunks` (above),
+  gated by `ENABLE_INSPECTION_API`.
 
 ## Configuration
 
