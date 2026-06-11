@@ -430,11 +430,13 @@ curl -H "Authorization: Bearer $API_KEY" \
 Four independently-toggleable layers of insight into how documents are ingested:
 
 - **Log verbosity** — `LOG_LEVEL` (`DEBUG | INFO | WARNING | ERROR | CRITICAL`)
-  is the primary dial. The per-document routing decision logs at **INFO**
-  (`routing X.docx -> engine=… signal=… profile=…`); the detailed detector
-  metrics (textbox counts, ratios, image area) log at **DEBUG**. `DEBUG=true`
-  remains a back-compat shortcut that bumps only the `app` namespace to DEBUG
-  and reflects `str(exc)` in error responses.
+  is the primary dial, applied to the root logger. The per-document routing
+  decision logs at **INFO** (`routing X.docx -> engine=… signal=… profile=…`);
+  the detailed detector metrics (textbox counts, ratios, image area) log at
+  **DEBUG**. `LOG_LEVEL_APP` optionally overrides just the `app` namespace, so
+  you can run verbose app logs without the third-party DEBUG flood (httpx /
+  boto3 / haystack); empty inherits `LOG_LEVEL`. (`DEBUG=true` is unrelated to
+  verbosity — it only reflects `str(exc)` in error responses for triage.)
 - **Structured logs** — `LOG_FORMAT=json` emits one JSON object per line
   (`ts`, `level`, `logger`, `msg`, plus any structured `extra=` fields) for
   Loki / a JSON-aware log pipeline. `text` (default) keeps the human format.
@@ -540,7 +542,7 @@ instead.
 
 **Seeing what `auto` chose.** The `/extract` response echoes the `engine` and `profile`
 used, and every chunk written to Qdrant carries `meta.extractor` / `meta.vision_profile`.
-For the `/ingest` path (Open WebUI's normal flow), set **`DEBUG=true`** to log the
+For the `/ingest` path (Open WebUI's normal flow), set **`LOG_LEVEL_APP=DEBUG`** to log the
 per-document routing decision — the detector signal (textbox: `textboxes`/`body_words`/`ratio`;
 raster: `images`/`max_image_emu`), the chosen `engine=… profile=…`, and the hybrid/vision
 branch — visible in the container logs (`docker logs <ingestion-container>`).

@@ -35,6 +35,7 @@ services:
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
       # Logging / observability
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_LEVEL_APP: ${LOG_LEVEL_APP:-}
       LOG_FORMAT: ${LOG_FORMAT:-text}
       METRICS_ENABLED: ${METRICS_ENABLED:-true}
       ENABLE_INSPECTION_API: ${ENABLE_INSPECTION_API:-false}
