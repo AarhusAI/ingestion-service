@@ -11,6 +11,7 @@ local-file lifecycle (always ``os.unlink`` in ``finally``).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -51,6 +52,14 @@ async def ingest(
     request: Request,
     _api_key: str = Depends(verify_api_key),
 ):
+    try:
+        return await _ingest_impl(request)
+    except HTTPException as exc:
+        metrics.ingest_requests_total.labels(outcome="error", code=_error_code(exc)).inc()
+        raise
+
+
+async def _ingest_impl(request: Request) -> IngestResponse:
     content_type = request.headers.get("content-type", "")
 
     if content_type.startswith("application/json"):
@@ -62,7 +71,9 @@ async def ingest(
                 detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
             ) from exc
         _check_bucket_allowed(body.s3_bucket)
-        local_path = _fetch_from_s3(body.s3_bucket, body.s3_key)
+        # boto3 is synchronous — offload so a slow S3 fetch doesn't stall the
+        # event loop (and with it the /health probes).
+        local_path = await asyncio.to_thread(_fetch_from_s3, body.s3_bucket, body.s3_key)
         meta = _meta_from_request(body)
     elif content_type.startswith("multipart/form-data"):
         form = await request.form()
@@ -80,7 +91,12 @@ async def ingest(
     try:
         _validate_collection_binding(meta)
         metrics.ingest_document_bytes.observe(_safe_size(local_path))
-        chunks, extraction = _run_pipeline_with_error_mapping(local_path, meta)
+        # The pipeline run is synchronous and can take tens of seconds
+        # (extraction sidecar + embedding endpoint + Qdrant write) — offload
+        # so other requests, including the health probes, keep being served.
+        chunks, extraction = await asyncio.to_thread(
+            _run_pipeline_with_error_mapping, local_path, meta
+        )
     finally:
         with contextlib.suppress(OSError):
             os.unlink(local_path)
@@ -237,7 +253,7 @@ def _meta_from_request(body: IngestRequestJSON) -> dict[str, Any]:
 
 def _required_form(form, key: str) -> str:
     value = form.get(key)
-    if not value:
+    if value is None or not str(value).strip():
         raise HTTPException(
             status_code=400,
             detail=IngestError(
@@ -245,13 +261,35 @@ def _required_form(form, key: str) -> str:
                 code="INVALID_REQUEST",
             ).model_dump(),
         )
-    return str(value)
+    return str(value).strip()
+
+
+_FORM_TRUE = frozenset({"true", "1", "yes", "y"})
+_FORM_FALSE = frozenset({"false", "0", "no", "n"})
 
 
 def _form_bool(value: Any) -> bool:
+    """Strict boolean parse for multipart form fields.
+
+    Anything outside the two known sets is a 400, not a silent ``False`` — a
+    typo'd ``overwrite`` value would otherwise disable the delete-then-write
+    idempotency contract and accumulate duplicate vectors on retry.
+    """
     if isinstance(value, bool):
         return value
-    return str(value).lower() in ("true", "1", "yes", "y")
+    lowered = str(value).strip().lower()
+    if lowered in _FORM_TRUE:
+        return True
+    if lowered in _FORM_FALSE:
+        return False
+    raise HTTPException(
+        status_code=400,
+        detail=IngestError(
+            error=f"invalid boolean form value {value!r} "
+            f"(use one of: {' | '.join(sorted(_FORM_TRUE | _FORM_FALSE))})",
+            code="INVALID_REQUEST",
+        ).model_dump(),
+    )
 
 
 def _validate_collection_binding(meta: dict[str, Any]) -> None:
@@ -310,6 +348,16 @@ def _safe_size(path: str) -> int:
         return 0
 
 
+def _error_code(exc: HTTPException) -> str:
+    """Pull the ``IngestError.code`` out of an HTTPException detail for the
+    error counter. Every raise in this route carries an ``IngestError`` dict;
+    the fallback covers anything that doesn't (label stays bounded either way).
+    """
+    if isinstance(exc.detail, dict):
+        return exc.detail.get("code", "PIPELINE_FAILED")
+    return "PIPELINE_FAILED"
+
+
 def _run_pipeline_with_error_mapping(
     file_path: str, meta: dict[str, Any]
 ) -> tuple[int, dict | None]:
@@ -323,7 +371,6 @@ def _run_pipeline_with_error_mapping(
         raise
     except Exception as exc:
         code = _classify_pipeline_error(exc)
-        metrics.ingest_requests_total.labels(outcome="error", code=code).inc()
         log.exception(
             "pipeline failure (%s) for file_id=%s",
             code,

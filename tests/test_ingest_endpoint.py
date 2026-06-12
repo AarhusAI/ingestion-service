@@ -243,6 +243,189 @@ def test_form_bool_passes_through_bool():
     assert _form_bool(False) is False
 
 
+def test_form_bool_parses_known_strings():
+    from app.routes.ingest import _form_bool
+
+    assert _form_bool("true") is True
+    assert _form_bool("Yes") is True
+    assert _form_bool("0") is False
+    assert _form_bool("false") is False
+
+
+def test_form_bool_rejects_unknown_values():
+    """A typo'd overwrite value must be a 400, not a silent False — silently
+    disabling overwrite breaks the delete-then-write idempotency contract."""
+    from fastapi import HTTPException
+
+    from app.routes.ingest import _form_bool
+
+    with pytest.raises(HTTPException) as exc_info:
+        _form_bool("ture")
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "INVALID_REQUEST"
+
+
+async def test_multipart_invalid_overwrite_rejected(client, api_headers):
+    """Unparseable overwrite form value returns 400 before the pipeline runs."""
+    files = {"file": ("report.pdf", BytesIO(b"%PDF-fake"), "application/pdf")}
+    data = {
+        "file_id": "abc",
+        "filename": "report.pdf",
+        "collection_name": "file-abc",
+        "user_id": "u-1",
+        "overwrite": "bogus",
+    }
+
+    with patch("app.routes.ingest.run_indexing_pipeline") as run_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_multipart_whitespace_required_field_rejected(client, api_headers):
+    """A whitespace-only required form field is rejected like a missing one."""
+    files = {"file": ("report.pdf", BytesIO(b"%PDF-fake"), "application/pdf")}
+    data = {
+        "file_id": "   ",
+        "filename": "report.pdf",
+        "collection_name": "file-abc",
+        "user_id": "u-1",
+    }
+
+    with patch("app.routes.ingest.run_indexing_pipeline") as run_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_json_whitespace_file_id_rejected(client, api_headers):
+    """str_strip_whitespace + min_length: ' ' can't satisfy a required field."""
+    response = await client.put(
+        "/api/v1/ingest",
+        json={
+            "s3_bucket": "openwebui",
+            "s3_key": "x.pdf",
+            "file_id": "   ",
+            "filename": "x.pdf",
+            "collection_name": "file-abc",
+            "user_id": "u-1",
+        },
+        headers=api_headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+
+
+async def test_json_unknown_field_rejected(client, api_headers):
+    """extra='forbid': a typo'd field name is a 400, not a silent no-op."""
+    response = await client.put(
+        "/api/v1/ingest",
+        json={
+            "s3_bucket": "openwebui",
+            "s3_key": "x.pdf",
+            "file_id": "abc",
+            "filename": "x.pdf",
+            "collection_name": "file-abc",
+            "user_id": "u-1",
+            "collection_nam": "typo",
+        },
+        headers=api_headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+
+
+# ---------------------------------------------------------------------------
+# Error-outcome metrics: every failed request increments ingest_requests_total
+# with the IngestError.code — including failures before the pipeline runs.
+# ---------------------------------------------------------------------------
+
+
+async def test_error_counter_increments_on_s3_failure(client, api_headers):
+    from prometheus_client import REGISTRY
+
+    label = {"outcome": "error", "code": "S3_FETCH_FAILED"}
+    before = REGISTRY.get_sample_value("ingest_requests_total", label) or 0.0
+
+    with patch(
+        "app.routes.ingest.fetch_object_to_tempfile",
+        side_effect=RuntimeError("connection refused"),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 500
+    after = REGISTRY.get_sample_value("ingest_requests_total", label)
+    assert after == before + 1
+
+
+async def test_error_counter_increments_on_validation_reject(client, api_headers):
+    from prometheus_client import REGISTRY
+
+    label = {"outcome": "error", "code": "INVALID_REQUEST"}
+    before = REGISTRY.get_sample_value("ingest_requests_total", label) or 0.0
+
+    response = await client.put(
+        "/api/v1/ingest",
+        content=b"raw bytes",
+        headers={**api_headers, "Content-Type": "text/plain"},
+    )
+
+    assert response.status_code == 415
+    after = REGISTRY.get_sample_value("ingest_requests_total", label)
+    assert after == before + 1
+
+
+async def test_pipeline_error_counted_exactly_once(client, api_headers, tmp_path):
+    """The handler counts centrally; the pipeline wrapper must not double-count."""
+    from prometheus_client import REGISTRY
+
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    label = {"outcome": "error", "code": "EXTRACTION_FAILED"}
+    before = REGISTRY.get_sample_value("ingest_requests_total", label) or 0.0
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch(
+            "app.routes.ingest.run_indexing_pipeline",
+            side_effect=RuntimeError("Tika converter timeout"),
+        ),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 500
+    after = REGISTRY.get_sample_value("ingest_requests_total", label)
+    assert after == before + 1
+
+
 # (The previous _PyPDFError / _OpenAIError stand-ins were removed alongside
 # the substring-name classifier. Real pypdf / openai classes are now used
 # directly in the typed-dispatch tests below.)

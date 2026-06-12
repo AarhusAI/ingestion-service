@@ -573,3 +573,20 @@ def test_content_tables_only_no_body(tmp_source):
     out = c.run(sources=[tmp_source])["documents"]
 
     assert out[0].content.startswith("## Tables\n\n### Table 1 (page 1)")
+
+
+@respx.mock
+def test_unusable_payload_yields_empty_content_with_warning(tmp_source, caplog):
+    """A response with no usable extraction result (shape drift) becomes an
+    empty Document — and logs a warning, since the ingest will otherwise
+    "succeed" with zero chunks and nothing else flags the drift."""
+    import logging
+
+    respx.post("http://fake-kreuzberg:8000/extract").respond(200, json=["not-a-dict"])
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    with caplog.at_level(logging.WARNING, logger="app.pipelines.kreuzberg_converter"):
+        out = c.run(sources=[tmp_source])["documents"]
+
+    assert out[0].content == ""
+    assert any("no usable extraction result" in r.message for r in caplog.records)

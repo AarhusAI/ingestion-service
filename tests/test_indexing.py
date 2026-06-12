@@ -156,6 +156,56 @@ def test_per_file_id_lock_cleans_up_registry():
     assert after == before
 
 
+def test_zero_chunk_ingest_warns_and_counts(monkeypatch, caplog):
+    """A run that writes 0 chunks still reports success to the caller, so the
+    warning log + ingest_empty_total counter are the only operator signal that
+    extraction produced nothing (e.g. a sidecar response-shape drift)."""
+    import logging
+
+    from prometheus_client import REGISTRY
+
+    mock_pipeline = MagicMock()
+    mock_pipeline.run.return_value = {
+        "writer": {"documents_written": 0},
+        "converter": {"documents": []},
+    }
+    monkeypatch.setattr(indexing, "_pipeline", mock_pipeline)
+    monkeypatch.setattr(indexing, "_document_store", MagicMock())
+
+    before = REGISTRY.get_sample_value("ingest_empty_total") or 0.0
+
+    with caplog.at_level(logging.WARNING, logger="app.pipelines.indexing"):
+        result = indexing.run_indexing_pipeline(
+            "/tmp/fake.pdf", {"file_id": "f-empty", "collection_name": "file-f-empty"}
+        )
+
+    assert result.chunks_count == 0
+    assert any("0 chunks" in r.message for r in caplog.records)
+    after = REGISTRY.get_sample_value("ingest_empty_total")
+    assert after == before + 1
+
+
+def test_nonzero_chunk_ingest_does_not_warn(monkeypatch, caplog):
+    """The zero-chunk warning must not fire on a normal ingest."""
+    import logging
+
+    mock_pipeline = MagicMock()
+    mock_pipeline.run.return_value = {
+        "writer": {"documents_written": 3},
+        "converter": {"documents": []},
+    }
+    monkeypatch.setattr(indexing, "_pipeline", mock_pipeline)
+    monkeypatch.setattr(indexing, "_document_store", MagicMock())
+
+    with caplog.at_level(logging.WARNING, logger="app.pipelines.indexing"):
+        result = indexing.run_indexing_pipeline(
+            "/tmp/fake.pdf", {"file_id": "f-ok", "collection_name": "file-f-ok"}
+        )
+
+    assert result.chunks_count == 3
+    assert not any("0 chunks" in r.message for r in caplog.records)
+
+
 def test_init_pipeline_warm_up_error_propagates(monkeypatch):
     """If warm-up fails (e.g. HuggingFace unreachable on a fresh deploy),
     the error must propagate — failing to start is better than silently

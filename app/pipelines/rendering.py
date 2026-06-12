@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import logging
 import mimetypes
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -26,6 +27,16 @@ import httpx
 from app.pipelines.errors import ExtractionError
 
 log = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=2)
+def _gotenberg_client(verify: bool) -> httpx.Client:
+    """One pooled client per verify mode, reused across calls.
+
+    httpx pins ``verify`` at client construction (timeouts stay per-request),
+    so the cache is keyed on it — in practice only one entry ever exists.
+    """
+    return httpx.Client(verify=verify)
 
 
 # Office formats LibreOffice (via Gotenberg) can turn into PDF. ``.pdf`` is
@@ -80,11 +91,10 @@ def office_to_pdf(
     content_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
     try:
         with p.open("rb") as fh:
-            resp = httpx.post(
+            resp = _gotenberg_client(verify).post(
                 url,
                 files={"files": (p.name, fh, content_type)},
                 timeout=timeout,
-                verify=verify,
             )
         resp.raise_for_status()
     except httpx.HTTPError as exc:
