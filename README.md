@@ -474,6 +474,15 @@ because they are **contracts with other services**:
 - `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
   the retrieval agent can use Qdrant's native hybrid query (RRF fusion) instead
   of the legacy client-side BM25.
+- `EMBEDDING_THREADS` caps the ONNX thread pool of the in-process fastembed
+  embedders (the sparse BM42 model, and the dense embedder when
+  `EMBEDDING_PROVIDER=fastembed`). ONNX otherwise grabs every core, saturating
+  CPU mid-ingest so the uvicorn event loop can't answer `/health` and Docker
+  restarts the container. `0` (default) = auto: leave 2 cores free for the event
+  loop; a positive value pins the count. Auto can't see a `cpus:` CFS quota, so
+  set it explicitly if you CPU-limit the container. `OMP_NUM_THREADS` (default
+  `4`) backstops onnxruntime's OpenMP/BLAS kernels and must be an env var (it is
+  read at native-library load time, before any Python runs).
 - `CHUNK_SPLIT_BY` selects the chunking strategy. The default `token` mode
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)

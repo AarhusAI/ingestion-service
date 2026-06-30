@@ -1,3 +1,5 @@
+import os
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
@@ -341,6 +343,27 @@ class Settings(BaseSettings):
     # fastembed | none
     sparse_embedding_provider: str = "fastembed"
     sparse_embedding_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+
+    # ----- In-process embedder CPU budget -----
+    # Caps the ONNX thread pool used by the in-process fastembed embedders
+    # (dense when EMBEDDING_PROVIDER=fastembed, and the sparse embedder). ONNX
+    # otherwise grabs every core, saturating CPU and starving the uvicorn event
+    # loop so /health stops responding mid-ingest. 0 = auto (leave 2 cores free
+    # for the event loop); a positive value pins the thread count exactly.
+    # NOTE: auto reads the *available* core count (sched_getaffinity), which
+    # honors cpuset pinning but NOT a CFS quota (docker `cpus:` / `--cpus`). If
+    # you cap the container with `cpus:`, set EMBEDDING_THREADS explicitly.
+    embedding_threads: int = 0
+
+    def resolved_embedding_threads(self) -> int:
+        """Concrete thread cap for the fastembed embedders (see embedding_threads)."""
+        if self.embedding_threads > 0:
+            return self.embedding_threads
+        try:
+            available = len(os.sched_getaffinity(0))
+        except AttributeError:  # not available on this platform
+            available = os.cpu_count() or 1
+        return max(1, available - 2)
 
     # ----- Qdrant -----
     qdrant_uri: str = "http://qdrant:6333"
