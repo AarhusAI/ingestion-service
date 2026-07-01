@@ -15,6 +15,7 @@ from app.auth import verify_api_key
 from app.config import settings
 from app.logging_config import configure_logging
 from app.pipelines.indexing import init_pipeline, is_pipeline_ready
+from app.routes.delete import router as delete_router
 from app.routes.extract import router as extract_router
 from app.routes.ingest import router as ingest_router
 from app.routes.inspect import router as inspect_router
@@ -76,6 +77,7 @@ app = FastAPI(
 app.include_router(ingest_router)
 app.include_router(extract_router)
 app.include_router(inspect_router)
+app.include_router(delete_router)
 
 
 @app.get("/health")

@@ -206,6 +206,87 @@ def test_nonzero_chunk_ingest_does_not_warn(monkeypatch, caplog):
     assert not any("0 chunks" in r.message for r in caplog.records)
 
 
+# ---------------------------------------------------------------------------
+# delete_by_file_id — backs DELETE /api/v1/documents/{file_id}.
+# ---------------------------------------------------------------------------
+
+
+def _mock_raw_client(monkeypatch, *, count=0, delete_side_effect=None):
+    """Patch the direct Qdrant client accessor and return the mock so tests can
+    assert on it. Raw point ops (count/scroll/delete) go through this, NOT the
+    QdrantDocumentStore, since qdrant-haystack 10.x hides its client."""
+    from types import SimpleNamespace
+
+    client = MagicMock()
+    client.count.return_value = SimpleNamespace(count=count)
+    if delete_side_effect is not None:
+        client.delete.side_effect = delete_side_effect
+    monkeypatch.setattr(indexing, "_raw_qdrant_client", lambda: client)
+    # Non-None document store is the "pipeline initialized" signal.
+    monkeypatch.setattr(indexing, "_document_store", MagicMock())
+    return client
+
+
+def test_delete_by_file_id_counts_then_deletes(monkeypatch):
+    """Returns the pre-delete chunk count and issues a filtered client.delete."""
+    client = _mock_raw_client(monkeypatch, count=3)
+
+    count = indexing.delete_by_file_id("f-1")
+
+    assert count == 3
+    client.delete.assert_called_once()
+    _, kwargs = client.delete.call_args
+    assert kwargs["collection_name"] == indexing.global_settings.qdrant_index
+    # points_selector is the same file_id filter used by count/scroll.
+    assert kwargs["points_selector"] == indexing._file_id_filter("f-1")
+
+
+def test_delete_by_file_id_takes_per_file_id_lock(monkeypatch):
+    """The delete must serialize against a concurrent same-file ingest by
+    entering the per-file-id lock (not just calling the raw client)."""
+    _mock_raw_client(monkeypatch, count=0)
+
+    seen: list[str] = []
+    real_lock = indexing._per_file_id_lock
+
+    def spy(file_id):
+        seen.append(file_id)
+        return real_lock(file_id)
+
+    monkeypatch.setattr(indexing, "_per_file_id_lock", spy)
+
+    indexing.delete_by_file_id("f-lock")
+
+    assert seen == ["f-lock"]
+
+
+def test_delete_by_file_id_raises_when_not_initialized(monkeypatch):
+    """Before init_pipeline, there's no document store — surface it, don't no-op."""
+    monkeypatch.setattr(indexing, "_document_store", None)
+
+    try:
+        indexing.delete_by_file_id("f-x")
+    except RuntimeError as exc:
+        assert "not initialized" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError when document store is None")
+
+
+def test_delete_by_file_id_propagates_qdrant_error(monkeypatch):
+    """A genuine Qdrant failure must propagate (→ DELETE_FAILED at the route),
+    not be swallowed the way the ingest-teardown _delete_existing_by_file_id is."""
+    _mock_raw_client(
+        monkeypatch, count=2, delete_side_effect=RuntimeError("qdrant unreachable")
+    )
+
+    try:
+        indexing.delete_by_file_id("f-err")
+    except RuntimeError as exc:
+        assert "qdrant" in str(exc).lower()
+    else:
+        raise AssertionError("expected the Qdrant error to propagate")
+
+
 def test_init_pipeline_warm_up_error_propagates(monkeypatch):
     """If warm-up fails (e.g. HuggingFace unreachable on a fresh deploy),
     the error must propagate — failing to start is better than silently

@@ -396,6 +396,7 @@ _SAFE_ERROR_MESSAGES: dict[str, str] = {
     "S3_FETCH_FAILED": "S3 object fetch failed.",
     "INVALID_REQUEST": "Invalid request.",
     "PIPELINE_FAILED": "Indexing pipeline failed.",
+    "DELETE_FAILED": "Vector store delete failed.",
 }
 
 

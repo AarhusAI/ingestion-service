@@ -58,3 +58,8 @@ def reset_clients():
     """Drop cached service clients between tests so settings overrides take effect."""
     yield
     s3_service.reset_client()
+    # Drop the cached direct Qdrant client (built lazily from settings) so a
+    # settings override in one test can't leak a stale client into the next.
+    from app.pipelines import indexing
+
+    indexing._raw_client = None
