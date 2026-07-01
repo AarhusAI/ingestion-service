@@ -29,9 +29,9 @@ async def lifespan(app: FastAPI):
     log.info("Starting ingestion service")
     log.info("Qdrant URI: %s (index=%s)", settings.qdrant_uri, settings.qdrant_index)
     log.info(
-        "Extraction engine: %s (tika_url=%s)",
+        "Extraction engine: %s (kreuzberg_url=%s)",
         settings.extraction_engine,
-        settings.tika_url,
+        settings.kreuzberg_url,
     )
     log.info(
         "Dense embedder: provider=%s model=%s dim=%s",

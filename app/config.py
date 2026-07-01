@@ -16,7 +16,7 @@ API_KEY_MIN_LENGTH = 32
 # default/diagram engines against this set. Kept here (not in Settings) so both
 # the validator and the factory can reference one source of truth.
 KNOWN_EXTRACTION_ENGINES = frozenset(
-    {"tika", "pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram"}
+    {"pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram"}
 )
 
 
@@ -48,7 +48,6 @@ class Settings(BaseSettings):
     # ``s3_endpoint_url`` and ``embedding_api_base_url`` use "" to mean
     # "use the SDK's default endpoint resolution".
     @field_validator(
-        "tika_url",
         "kreuzberg_url",
         "vision_llm_api_base_url",
         "gotenberg_url",
@@ -154,16 +153,15 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 100 * 1024 * 1024
 
     # ----- Extraction -----
-    # tika | pypdf | docling | unstructured | kreuzberg | vision-llm | auto
-    # tika/kreuzberg run as external HTTP sidecars; the rest are in-process.
+    # pypdf | docling | unstructured | kreuzberg | vision-llm | auto
+    # kreuzberg runs as an external HTTP sidecar; the rest are in-process.
     # docling/unstructured require optional deps not bundled by default.
     # vision-llm renders pages and reconstructs structure via a multimodal LLM.
     # "auto" enables per-document routing (see app/pipelines/detectors.py +
     # routing_converter.py): drawing-heavy docx go to the diagram engine, the
     # rest to the router default. Any other value pins that single engine
     # (current behaviour — routing OFF).
-    extraction_engine: str = "tika"
-    tika_url: str = "http://tika:9998"
+    extraction_engine: str = "kreuzberg"
     kreuzberg_url: str = "http://kreuzberg:8000"
     # Split connect vs read timeout for the Kreuzberg sidecar. A single
     # 60-second blanket value (the previous default) means a sidecar that
@@ -187,9 +185,9 @@ class Settings(BaseSettings):
 
     # ----- Content-based routing (EXTRACTION_ENGINE=auto) -----
     # Only consulted when extraction_engine == "auto". Defaults keep the
-    # cheap-default contract (tika for ordinary docs) while sending
+    # cheap-default contract (kreuzberg for ordinary docs) while sending
     # drawing-heavy docx (swim-lane flowcharts etc.) to the vision engine.
-    extraction_router_default: str = "tika"
+    extraction_router_default: str = "kreuzberg"
     # hybrid-diagram = native docx text (authoritative, complete labels) + a
     # vision-inferred Mermaid graph. Preferred over bare vision-llm for the
     # diagram route because the body text is verbatim from the package XML

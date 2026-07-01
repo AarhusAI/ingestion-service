@@ -22,7 +22,7 @@ class IngestionError(Exception):
 
 
 class ExtractionError(IngestionError):
-    """Extraction stage failed (Tika sidecar, pypdf, Kreuzberg, etc.)."""
+    """Extraction stage failed (Kreuzberg sidecar, pypdf, vision-llm, etc.)."""
 
 
 class EmbeddingError(IngestionError):

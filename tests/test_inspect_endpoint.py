@@ -54,7 +54,7 @@ async def test_happy_path_returns_chunks_and_stats(client, api_headers, enabled)
             "Hello world",
             {
                 "split_id": 0,
-                "extraction_engine": "tika",
+                "extraction_engine": "kreuzberg",
                 "extraction_route": {"signal": "default"},
                 "languages": ["da"],
                 "name": "f.pdf",
@@ -75,7 +75,7 @@ async def test_happy_path_returns_chunks_and_stats(client, api_headers, enabled)
     assert body["file_id"] == "abc"
     assert body["returned"] == 2
     assert body["stats"]["total_chunks"] == 2
-    assert body["stats"]["extraction_engine"] == "tika"
+    assert body["stats"]["extraction_engine"] == "kreuzberg"
     assert body["stats"]["extraction_route"]["signal"] == "default"
     assert body["chunks"][0]["split_id"] == 0
     assert body["chunks"][0]["content_length"] == len("Hello world")

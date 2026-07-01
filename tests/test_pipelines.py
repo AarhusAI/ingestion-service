@@ -23,12 +23,6 @@ def _settings(**overrides) -> Settings:
 # -------------------- Converters --------------------
 
 
-def test_build_converter_tika():
-    s = _settings(extraction_engine="tika")
-    c = build_converter(s)
-    assert type(c).__name__ == "TikaDocumentConverter"
-
-
 def test_build_converter_pypdf():
     s = _settings(extraction_engine="pypdf")
     c = build_converter(s)
@@ -43,7 +37,7 @@ def test_build_converter_kreuzberg():
 
 def test_build_converter_override_kreuzberg():
     """``engine_override=kreuzberg`` wins over the configured engine."""
-    s = _settings(extraction_engine="tika")
+    s = _settings(extraction_engine="pypdf")
     c = build_converter(s, engine_override="kreuzberg")
     assert type(c).__name__ == "KreuzbergRemoteConverter"
 
@@ -91,20 +85,20 @@ def test_build_converter_for_pipeline_auto_returns_router():
 def test_build_converter_for_pipeline_concrete_engine():
     from app.pipelines.indexing import _build_converter_for_pipeline
 
-    s = _settings(extraction_engine="tika")
+    s = _settings(extraction_engine="kreuzberg")
     c = _build_converter_for_pipeline(s)
-    assert type(c).__name__ == "TikaDocumentConverter"
+    assert type(c).__name__ == "KreuzbergRemoteConverter"
 
 
 def test_build_converter_override_takes_precedence():
     """``engine_override`` (used by /api/v1/extract) wins over the configured engine."""
-    s = _settings(extraction_engine="tika")
+    s = _settings(extraction_engine="kreuzberg")
     c = build_converter(s, engine_override="pypdf")
     assert type(c).__name__ == "PyPDFToDocument"
 
 
 def test_build_converter_override_validates_unknown():
-    s = _settings(extraction_engine="tika")
+    s = _settings(extraction_engine="kreuzberg")
     with pytest.raises(ValueError, match="Unknown EXTRACTION_ENGINE='banana'"):
         build_converter(s, engine_override="banana")
 

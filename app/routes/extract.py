@@ -34,7 +34,6 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _SUPPORTED_ENGINES = {
-    "tika",
     "pypdf",
     "docling",
     "unstructured",
@@ -61,7 +60,7 @@ async def extract(
         None,
         description=(
             "Optional override of EXTRACTION_ENGINE for this request. "
-            "One of: tika, pypdf, docling, unstructured, kreuzberg, vision-llm, "
+            "One of: pypdf, docling, unstructured, kreuzberg, vision-llm, "
             "hybrid-diagram (diagram .docx: native text + vision Mermaid). "
             "When omitted, the configured engine is used. ('auto' is a routing "
             "mode for ingest, not a concrete engine — not accepted here.)"

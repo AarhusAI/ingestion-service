@@ -29,7 +29,7 @@ async def test_extract_happy_path_uses_configured_engine(client, api_headers):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] is True
-    assert body["engine"] == "tika"  # the default in app.config.Settings
+    assert body["engine"] == "kreuzberg"  # the default in app.config.Settings
     assert body["documents"] == [{"content": "# Heading\n...", "meta": {"page": 1}}]
     # engine_override stays None when client omits the field
     _, kwargs = build_mock.call_args
@@ -74,7 +74,7 @@ async def test_extract_unknown_engine_returns_400(client, api_headers):
 async def test_extract_kreuzberg_engine_is_accepted(client, api_headers):
     """Regression guard: the route-layer ``_SUPPORTED_ENGINES`` whitelist must
     include ``kreuzberg``. Forgetting this returned 400 INVALID_REQUEST with
-    ``Unknown engine='kreuzberg' (supported: docling | pypdf | tika |
+    ``Unknown engine='kreuzberg' (supported: docling | pypdf |
     unstructured)`` even though the factory was wired correctly."""
     fake_converter = MagicMock()
     fake_converter.run.return_value = {"documents": [_fake_doc("ok")]}
@@ -165,7 +165,7 @@ async def test_extract_profile_with_non_vision_engine_returns_400(client, api_he
         response = await client.post(
             "/api/v1/extract",
             files={"file": ("a.pdf", BytesIO(b"%PDF-fake"), "application/pdf")},
-            data={"engine": "tika", "profile": "ocr"},
+            data={"engine": "pypdf", "profile": "ocr"},
             headers=api_headers,
         )
     assert response.status_code == 400
@@ -179,7 +179,7 @@ async def test_extract_missing_file_returns_400(client, api_headers):
     response = await client.post(
         "/api/v1/extract",
         files={"not_file": ("a.pdf", BytesIO(b"x"), "application/pdf")},
-        data={"engine": "tika"},
+        data={"engine": "pypdf"},
         headers=api_headers,
     )
     assert response.status_code == 400
@@ -188,7 +188,7 @@ async def test_extract_missing_file_returns_400(client, api_headers):
 
 async def test_extract_converter_failure_returns_500_extraction_failed(client, api_headers):
     fake_converter = MagicMock()
-    fake_converter.run.side_effect = RuntimeError("tika unreachable")
+    fake_converter.run.side_effect = RuntimeError("kreuzberg unreachable")
 
     with patch("app.routes.extract.build_converter", return_value=fake_converter):
         response = await client.post(

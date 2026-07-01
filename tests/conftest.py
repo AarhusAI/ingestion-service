@@ -6,17 +6,16 @@ os.environ["EMBEDDING_API_BASE_URL"] = "http://fake-embedding:8080"
 os.environ["EMBEDDING_API_KEY"] = "fake-key"
 os.environ["EMBEDDING_MODEL"] = "intfloat/multilingual-e5-large"
 os.environ["QDRANT_URI"] = "http://fake-qdrant:6333"
-os.environ["TIKA_URL"] = "http://fake-tika:9998"
 os.environ["KREUZBERG_URL"] = "http://fake-kreuzberg:8000"
 # Pin the default extraction engine for tests so the suite is independent of
 # whatever the live container is configured with (operators flipping
-# EXTRACTION_ENGINE=kreuzberg shouldn't break tests that assert on defaults).
-os.environ["EXTRACTION_ENGINE"] = "tika"
+# EXTRACTION_ENGINE=auto shouldn't break tests that assert on defaults).
+os.environ["EXTRACTION_ENGINE"] = "kreuzberg"
 # Same reasoning for the routing knobs: a deployment that sets these in its .env
 # (e.g. EXTRACTION_ROUTER_DIAGRAM_ENGINE=hybrid-diagram) must not leak into tests
 # that build Settings(_env_file=None) — pydantic still reads os.environ. Pin them
 # to the code defaults so routing/detector tests are deterministic.
-os.environ["EXTRACTION_ROUTER_DEFAULT"] = "tika"
+os.environ["EXTRACTION_ROUTER_DEFAULT"] = "kreuzberg"
 os.environ["EXTRACTION_ROUTER_DIAGRAM_ENGINE"] = "hybrid-diagram"
 os.environ["EXTRACTION_ROUTER_DIAGRAM_PROFILE"] = "diagram"
 os.environ["EXTRACTION_ROUTER_MIN_TEXTBOXES"] = "20"
