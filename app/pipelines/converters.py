@@ -1,13 +1,12 @@
 """Document converter factory.
 
-Selects a Haystack converter based on ``EXTRACTION_ENGINE``. ``tika``,
-``pypdf`` and ``kreuzberg`` ship in the day-one image — ``tika`` and
-``kreuzberg`` both run as external HTTP sidecars (the others are
-in-process). ``docling`` and ``unstructured`` are wired but their (heavy)
-deps are deliberately not in pyproject.toml — they will raise a clear
-``ImportError`` at startup if selected without the dep installed.
-``vision-llm`` renders pages (office->PDF via the Gotenberg sidecar,
-PDF->PNG locally) and reconstructs structure via a multimodal LLM.
+Selects a Haystack converter based on ``EXTRACTION_ENGINE``. ``pypdf`` and
+``kreuzberg`` ship in the day-one image — ``kreuzberg`` runs as an external
+HTTP sidecar, ``pypdf`` is in-process. ``docling`` and ``unstructured`` are
+wired but their (heavy) deps are deliberately not in pyproject.toml — they
+will raise a clear ``ImportError`` at startup if selected without the dep
+installed. ``vision-llm`` renders pages (office->PDF via the Gotenberg
+sidecar, PDF->PNG locally) and reconstructs structure via a multimodal LLM.
 
 Not built here: ``"auto"`` is a routing *mode*, not an engine — see
 ``app/pipelines/routing_converter.py``, wired in ``indexing.py``.
@@ -23,11 +22,6 @@ def build_converter(settings: Settings, engine_override: str | None = None):
     compare engines on the same file without restarting the container.
     """
     engine = (engine_override or settings.extraction_engine).lower()
-
-    if engine == "tika":
-        from haystack.components.converters import TikaDocumentConverter
-
-        return TikaDocumentConverter(tika_url=settings.tika_url)
 
     if engine == "pypdf":
         from haystack.components.converters import PyPDFToDocument
@@ -109,6 +103,6 @@ def build_converter(settings: Settings, engine_override: str | None = None):
 
     raise ValueError(
         f"Unknown EXTRACTION_ENGINE={engine!r} "
-        "(supported: tika | pypdf | docling | unstructured | kreuzberg | "
+        "(supported: pypdf | docling | unstructured | kreuzberg | "
         "vision-llm | hybrid-diagram)"
     )

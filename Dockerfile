@@ -6,6 +6,14 @@ WORKDIR /app
 # home directory (--no-create-home), so opt out at the Dockerfile level.
 ENV HAYSTACK_TELEMETRY_ENABLED=False
 
+# Backstop for OpenMP/BLAS kernels inside onnxruntime, which read these at
+# native-library load time (before Python sets anything). The authoritative cap
+# is the in-code `threads` arg (EMBEDDING_THREADS) on the fastembed embedders;
+# this just stops OpenMP from over-subscribing cores on the common 8-core host.
+# Override via compose for differently-sized hosts.
+ENV OMP_NUM_THREADS=4 \
+    OPENBLAS_NUM_THREADS=4
+
 # Pin the in-container appuser to a uid/gid that match the host developer's
 # user. /app is bind-mounted in dev, and tools like ruff/pytest need to
 # create cache dirs there — running as a mismatched uid makes those writes

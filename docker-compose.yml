@@ -41,7 +41,6 @@ services:
       ENABLE_INSPECTION_API: ${ENABLE_INSPECTION_API:-false}
       # Extraction
       EXTRACTION_ENGINE: ${EXTRACTION_ENGINE:-auto}
-      TIKA_URL: ${TIKA_URL:-http://tika:9998}
       KREUZBERG_URL: ${KREUZBERG_URL:-http://kreuzberg:8000}
       KREUZBERG_CONNECT_TIMEOUT: ${KREUZBERG_CONNECT_TIMEOUT:-5.0}
       KREUZBERG_READ_TIMEOUT: ${KREUZBERG_READ_TIMEOUT:-60.0}
@@ -86,6 +85,12 @@ services:
       ENABLE_SPARSE_EMBEDDINGS: ${ENABLE_SPARSE_EMBEDDINGS:-false}
       SPARSE_EMBEDDING_PROVIDER: ${SPARSE_EMBEDDING_PROVIDER:-fastembed}
       SPARSE_EMBEDDING_MODEL: ${SPARSE_EMBEDDING_MODEL:-Qdrant/bm42-all-minilm-l6-v2-attentions}
+      # In-process embedder CPU budget. EMBEDDING_THREADS=0 => auto (leave 2 cores
+      # for the event loop so /health stays responsive); OMP_NUM_THREADS backstops
+      # the OpenMP/BLAS kernels. Set EMBEDDING_THREADS explicitly if you apply a
+      # `cpus:` limit (auto can't see a CFS quota).
+      EMBEDDING_THREADS: ${EMBEDDING_THREADS:-0}
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
       # Qdrant
       QDRANT_URI: ${QDRANT_URI:-http://qdrant:6333}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}

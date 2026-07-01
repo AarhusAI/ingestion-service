@@ -1,3 +1,5 @@
+import os
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
@@ -14,7 +16,7 @@ API_KEY_MIN_LENGTH = 32
 # default/diagram engines against this set. Kept here (not in Settings) so both
 # the validator and the factory can reference one source of truth.
 KNOWN_EXTRACTION_ENGINES = frozenset(
-    {"tika", "pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram"}
+    {"pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram"}
 )
 
 
@@ -46,7 +48,6 @@ class Settings(BaseSettings):
     # ``s3_endpoint_url`` and ``embedding_api_base_url`` use "" to mean
     # "use the SDK's default endpoint resolution".
     @field_validator(
-        "tika_url",
         "kreuzberg_url",
         "vision_llm_api_base_url",
         "gotenberg_url",
@@ -152,16 +153,15 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 100 * 1024 * 1024
 
     # ----- Extraction -----
-    # tika | pypdf | docling | unstructured | kreuzberg | vision-llm | auto
-    # tika/kreuzberg run as external HTTP sidecars; the rest are in-process.
+    # pypdf | docling | unstructured | kreuzberg | vision-llm | auto
+    # kreuzberg runs as an external HTTP sidecar; the rest are in-process.
     # docling/unstructured require optional deps not bundled by default.
     # vision-llm renders pages and reconstructs structure via a multimodal LLM.
     # "auto" enables per-document routing (see app/pipelines/detectors.py +
     # routing_converter.py): drawing-heavy docx go to the diagram engine, the
     # rest to the router default. Any other value pins that single engine
     # (current behaviour — routing OFF).
-    extraction_engine: str = "tika"
-    tika_url: str = "http://tika:9998"
+    extraction_engine: str = "kreuzberg"
     kreuzberg_url: str = "http://kreuzberg:8000"
     # Split connect vs read timeout for the Kreuzberg sidecar. A single
     # 60-second blanket value (the previous default) means a sidecar that
@@ -185,9 +185,9 @@ class Settings(BaseSettings):
 
     # ----- Content-based routing (EXTRACTION_ENGINE=auto) -----
     # Only consulted when extraction_engine == "auto". Defaults keep the
-    # cheap-default contract (tika for ordinary docs) while sending
+    # cheap-default contract (kreuzberg for ordinary docs) while sending
     # drawing-heavy docx (swim-lane flowcharts etc.) to the vision engine.
-    extraction_router_default: str = "tika"
+    extraction_router_default: str = "kreuzberg"
     # hybrid-diagram = native docx text (authoritative, complete labels) + a
     # vision-inferred Mermaid graph. Preferred over bare vision-llm for the
     # diagram route because the body text is verbatim from the package XML
@@ -341,6 +341,27 @@ class Settings(BaseSettings):
     # fastembed | none
     sparse_embedding_provider: str = "fastembed"
     sparse_embedding_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+
+    # ----- In-process embedder CPU budget -----
+    # Caps the ONNX thread pool used by the in-process fastembed embedders
+    # (dense when EMBEDDING_PROVIDER=fastembed, and the sparse embedder). ONNX
+    # otherwise grabs every core, saturating CPU and starving the uvicorn event
+    # loop so /health stops responding mid-ingest. 0 = auto (leave 2 cores free
+    # for the event loop); a positive value pins the thread count exactly.
+    # NOTE: auto reads the *available* core count (sched_getaffinity), which
+    # honors cpuset pinning but NOT a CFS quota (docker `cpus:` / `--cpus`). If
+    # you cap the container with `cpus:`, set EMBEDDING_THREADS explicitly.
+    embedding_threads: int = 0
+
+    def resolved_embedding_threads(self) -> int:
+        """Concrete thread cap for the fastembed embedders (see embedding_threads)."""
+        if self.embedding_threads > 0:
+            return self.embedding_threads
+        try:
+            available = len(os.sched_getaffinity(0))
+        except AttributeError:  # not available on this platform
+            available = os.cpu_count() or 1
+        return max(1, available - 2)
 
     # ----- Qdrant -----
     qdrant_uri: str = "http://qdrant:6333"

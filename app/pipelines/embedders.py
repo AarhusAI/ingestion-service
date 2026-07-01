@@ -30,7 +30,14 @@ def build_dense_embedder(settings: Settings):
             FastembedDocumentEmbedder,
         )
 
-        return FastembedDocumentEmbedder(model=settings.embedding_model)
+        return FastembedDocumentEmbedder(
+            model=settings.embedding_model,
+            # Cap the ONNX thread pool so in-process embedding leaves cores for
+            # the event loop; parallel=1 forbids fastembed's batch multiprocessing
+            # (each forked worker would re-grab cores and defeat the thread cap).
+            threads=settings.resolved_embedding_threads(),
+            parallel=1,
+        )
 
     raise ValueError(
         f"Unknown EMBEDDING_PROVIDER={settings.embedding_provider!r} "
@@ -52,7 +59,14 @@ def build_sparse_embedder(settings: Settings):
             FastembedSparseDocumentEmbedder,
         )
 
-        return FastembedSparseDocumentEmbedder(model=settings.sparse_embedding_model)
+        # See build_dense_embedder for why threads/parallel are pinned: the
+        # sparse BM42 model is the CPU bottleneck that otherwise saturates all
+        # cores and makes /health time out during ingestion.
+        return FastembedSparseDocumentEmbedder(
+            model=settings.sparse_embedding_model,
+            threads=settings.resolved_embedding_threads(),
+            parallel=1,
+        )
 
     raise ValueError(
         f"Unknown SPARSE_EMBEDDING_PROVIDER={settings.sparse_embedding_provider!r} "

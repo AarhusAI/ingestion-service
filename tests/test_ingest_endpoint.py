@@ -207,7 +207,7 @@ async def test_pipeline_failure_maps_to_classified_error(client, api_headers, tm
         ),
         patch(
             "app.routes.ingest.run_indexing_pipeline",
-            side_effect=RuntimeError("Tika converter timeout"),
+            side_effect=RuntimeError("Kreuzberg converter timeout"),
         ),
     ):
         response = await client.put(
@@ -405,7 +405,7 @@ async def test_pipeline_error_counted_exactly_once(client, api_headers, tmp_path
         patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
         patch(
             "app.routes.ingest.run_indexing_pipeline",
-            side_effect=RuntimeError("Tika converter timeout"),
+            side_effect=RuntimeError("Kreuzberg converter timeout"),
         ),
     ):
         response = await client.put(
@@ -751,7 +751,7 @@ def test_classify_dispatches_on_openai_real_class():
     [
         # Substring fallback for Haystack-internal failures that surface
         # as generic Exception with descriptive messages.
-        (RuntimeError("Tika converter timeout"), "EXTRACTION_FAILED"),
+        (RuntimeError("Kreuzberg converter timeout"), "EXTRACTION_FAILED"),
         (RuntimeError("could not extract pages"), "EXTRACTION_FAILED"),
         (RuntimeError("qdrant write failed"), "QDRANT_WRITE_FAILED"),
         (RuntimeError("vector store unreachable"), "QDRANT_WRITE_FAILED"),

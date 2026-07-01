@@ -22,7 +22,7 @@ def _settings(**overrides) -> Settings:
     base = {
         "api_key": "a" * 32,
         "extraction_engine": "auto",
-        "extraction_router_default": "tika",
+        "extraction_router_default": "kreuzberg",
         "extraction_router_diagram_engine": "vision-llm",
         # Pin the profile too — the diagram-profile assertions must not inherit a
         # deployment's EXTRACTION_ROUTER_DIAGRAM_PROFILE (e.g. diagram-topology).
@@ -33,25 +33,25 @@ def _settings(**overrides) -> Settings:
 
 
 def _fakes():
-    """Return (tika, vision) converter mocks + a build_converter side_effect."""
-    tika = MagicMock(name="tika")
+    """Return (default, vision) converter mocks + a build_converter side_effect."""
+    default = MagicMock(name="kreuzberg")
     vision = MagicMock(name="vision")
-    # tika has no profile concept; vision does. Set explicitly so the router's
-    # `getattr(conv, "accepts_profile", False)` guard is deterministic (a bare
-    # MagicMock would auto-return a truthy attribute).
-    tika.accepts_profile = False
+    # the default engine has no profile concept; vision does. Set explicitly so
+    # the router's `getattr(conv, "accepts_profile", False)` guard is deterministic
+    # (a bare MagicMock would auto-return a truthy attribute).
+    default.accepts_profile = False
     vision.accepts_profile = True
-    tika.run.return_value = {"documents": [Document(content="tika out")]}
+    default.run.return_value = {"documents": [Document(content="default out")]}
     vision.run.return_value = {"documents": [Document(content="vision out")]}
 
     def build(_s, engine_override=None):
-        return {"tika": tika, "vision-llm": vision}[engine_override]
+        return {"kreuzberg": default, "vision-llm": vision}[engine_override]
 
-    return tika, vision, build
+    return default, vision, build
 
 
 def test_routes_diagram_doc_to_diagram_engine():
-    tika, vision, build = _fakes()
+    default, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
@@ -60,7 +60,7 @@ def test_routes_diagram_doc_to_diagram_engine():
         out = conv.run(sources=["x.docx"], meta={"file_id": "f1"})["documents"]
 
     assert vision.run.called
-    assert not tika.run.called
+    assert not default.run.called
     assert out[0].content == "vision out"
     # request meta is forwarded to the inner converter
     _, kwargs = vision.run.call_args
@@ -68,7 +68,7 @@ def test_routes_diagram_doc_to_diagram_engine():
 
 
 def test_routes_to_hybrid_diagram_engine_and_forwards_profile():
-    default = MagicMock(name="tika")
+    default = MagicMock(name="kreuzberg")
     hybrid = MagicMock(name="hybrid")
     default.accepts_profile = False
     hybrid.accepts_profile = True
@@ -76,7 +76,7 @@ def test_routes_to_hybrid_diagram_engine_and_forwards_profile():
     hybrid.run.return_value = {"documents": [Document(content="hybrid out")]}
 
     def build(_s, engine_override=None):
-        return {"tika": default, "hybrid-diagram": hybrid}[engine_override]
+        return {"kreuzberg": default, "hybrid-diagram": hybrid}[engine_override]
 
     s = _settings(extraction_router_diagram_engine="hybrid-diagram")
     with (
@@ -95,7 +95,7 @@ def test_routes_to_hybrid_diagram_engine_and_forwards_profile():
 
 
 def test_routes_default_when_detection_returns_none():
-    tika, vision, build = _fakes()
+    default, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
@@ -103,13 +103,13 @@ def test_routes_default_when_detection_returns_none():
         conv = rc.RoutingConverter(_settings())
         out = conv.run(sources=["x.docx"], meta={})["documents"]
 
-    assert tika.run.called
+    assert default.run.called
     assert not vision.run.called
-    assert out[0].content == "tika out"
+    assert out[0].content == "default out"
 
 
 def test_detection_error_falls_back_to_default():
-    tika, _vision, build = _fakes()
+    default, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", side_effect=ValueError("boom")),
@@ -118,17 +118,17 @@ def test_detection_error_falls_back_to_default():
         # Must not raise — the bad detector degrades to the default engine.
         out = conv.run(sources=["x.docx"], meta={})["documents"]
 
-    assert tika.run.called
-    assert out[0].content == "tika out"
+    assert default.run.called
+    assert out[0].content == "default out"
 
 
 def test_warm_up_fans_out_to_inner_converters():
-    tika, vision, build = _fakes()
+    default, vision, build = _fakes()
     with patch.object(rc, "build_converter", side_effect=build):
         conv = rc.RoutingConverter(_settings())
         conv.warm_up()
 
-    assert tika.warm_up.called
+    assert default.warm_up.called
     assert vision.warm_up.called
 
 
@@ -137,7 +137,7 @@ def test_warm_up_skips_converters_without_warm_up():
     plain = object()  # no warm_up attribute
 
     def build(_s, engine_override=None):
-        return {"tika": plain, "vision-llm": vision}[engine_override]
+        return {"kreuzberg": plain, "vision-llm": vision}[engine_override]
 
     with patch.object(rc, "build_converter", side_effect=build):
         conv = rc.RoutingConverter(_settings())
@@ -147,7 +147,7 @@ def test_warm_up_skips_converters_without_warm_up():
 
 
 def test_meta_per_source_list_form():
-    tika, _vision, build = _fakes()
+    default, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
@@ -155,12 +155,12 @@ def test_meta_per_source_list_form():
         conv = rc.RoutingConverter(_settings())
         conv.run(sources=["a.docx", "b.docx"], meta=[{"file_id": "1"}, {"file_id": "2"}])
 
-    metas = [kwargs["meta"] for _, kwargs in tika.run.call_args_list]
+    metas = [kwargs["meta"] for _, kwargs in default.run.call_args_list]
     assert metas == [{"file_id": "1"}, {"file_id": "2"}]
 
 
 def test_documents_are_concatenated_across_sources():
-    _tika, _vision, build = _fakes()
+    _default, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
@@ -172,7 +172,7 @@ def test_documents_are_concatenated_across_sources():
 
 
 def test_diagram_route_forwards_diagram_profile():
-    _tika, vision, build = _fakes()
+    _default, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
@@ -185,7 +185,7 @@ def test_diagram_route_forwards_diagram_profile():
 
 
 def test_default_route_forwards_no_profile():
-    tika, _vision, build = _fakes()
+    default, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision(None, "default")),
@@ -193,12 +193,12 @@ def test_default_route_forwards_no_profile():
         conv = rc.RoutingConverter(_settings())
         conv.run(sources=["x.docx"], meta={})
 
-    _, kwargs = tika.run.call_args
+    _, kwargs = default.run.call_args
     assert "profile" not in kwargs
 
 
 def test_custom_diagram_profile_is_honored():
-    _tika, vision, build = _fakes()
+    _default, vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
@@ -238,7 +238,7 @@ def test_profile_not_passed_to_non_profile_aware_diagram_engine():
 
 
 def test_logs_routing_decision_at_info(caplog):
-    _tika, _vision, build = _fakes()
+    _default, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         patch.object(rc, "classify_engine", return_value=RoutingDecision("vision-llm", "textbox")),
@@ -254,7 +254,7 @@ def test_logs_routing_decision_at_info(caplog):
 def test_stamps_routing_decision_onto_document_meta():
     """The router stamps the resolved engine + route (signal/metrics) onto each
     output document's meta so it flows to Qdrant and the inspection endpoint."""
-    _tika, _vision, build = _fakes()
+    _default, _vision, build = _fakes()
     decision = RoutingDecision("vision-llm", "textbox", {"textboxes": 50, "ratio": 8.33})
     with (
         patch.object(rc, "build_converter", side_effect=build),
@@ -268,7 +268,7 @@ def test_stamps_routing_decision_onto_document_meta():
 
 
 def test_invalid_diagram_profile_raises_at_construction():
-    _tika, _vision, build = _fakes()
+    _default, _vision, build = _fakes()
     with (
         patch.object(rc, "build_converter", side_effect=build),
         pytest.raises(ValueError, match="not a known"),

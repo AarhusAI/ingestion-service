@@ -27,7 +27,7 @@ flowchart LR
   OWB["Open WebUI<br/>(EXTERNAL_INGESTION_ENGINE=external)"]
   ING["ingestion-service<br/>PUT /api/v1/ingest"]
   S3[("S3 / MinIO<br/>raw files")]
-  SIDE["Tika / Kreuzberg<br/>extraction sidecar"]
+  SIDE["Kreuzberg<br/>extraction sidecar"]
   GOT["Gotenberg<br/>office→PDF render sidecar"]
   VLM["Vision LLM endpoint<br/>(multimodal, VISION_LLM_*)"]
   EMB["Embedding endpoint<br/>(embed.itkdev.dk, TEI, or in-process fastembed)"]
@@ -69,7 +69,7 @@ Each stage, in order:
 
 - **Converter** (`app/pipelines/converters.py`) — turns the raw file into one or
   more Haystack `Document` objects. Factory dispatches on `EXTRACTION_ENGINE`:
-  `tika` and `kreuzberg` are HTTP sidecars, `pypdf` is in-process,
+  `kreuzberg` is an HTTP sidecar, `pypdf` is in-process,
   `docling` / `unstructured` require optional deps. Kreuzberg uses a custom
   Haystack component (`app/pipelines/kreuzberg_converter.py`) that additionally
   surfaces document-level metadata (title, authors, languages) and renders
@@ -152,11 +152,10 @@ Where to start reading when you need to change something:
 - A Qdrant instance (shared with the retrieval agent)
 - An OpenAI-compatible embedding endpoint (e.g. the `embed.itkdev.dk` proxy)
 - An extraction sidecar reachable on the same network: a Kreuzberg API server
-  (`EXTRACTION_ENGINE=kreuzberg` — the value shipped in `.env.example`, so it's
-  what you get out of the box) or a Tika server (`EXTRACTION_ENGINE=tika` — the
-  code-level fallback in `config.py` when nothing is configured). Both ship as
-  containers in the parent stack. See [Extraction Engines](#extraction-engines)
-  for the full matrix.
+  (`EXTRACTION_ENGINE=kreuzberg` — the value shipped in `.env.example` and the
+  code-level default in `config.py`, so it's what you get out of the box). It
+  ships as a container in the parent stack. See
+  [Extraction Engines](#extraction-engines) for the full matrix.
 - **Only for the vision engines** (`vision-llm`, `hybrid-diagram`, or `auto`
   when it routes a diagram-heavy document): a [Gotenberg](https://gotenberg.dev/)
   sidecar for office→PDF rendering — bundled in this repo's own
@@ -173,7 +172,7 @@ cp .env.example .env
 # Edit .env — at minimum set API_KEY and EMBEDDING_API_KEY. The other defaults
 # in .env.example (EXTRACTION_ENGINE=kreuzberg,
 # EMBEDDING_API_BASE_URL=https://embed.itkdev.dk/v1, MinIO, Qdrant, and the
-# Kreuzberg/Tika sidecar URLs) are the working Aarhus dev values; only override
+# Kreuzberg sidecar URL) are the working Aarhus dev values; only override
 # when pointing at something else. If you switch to a vision engine
 # (vision-llm / hybrid-diagram / auto), also set VISION_LLM_API_BASE_URL +
 # VISION_LLM_API_KEY.
@@ -338,7 +337,7 @@ Fields:
 
 - `file` (required) — the document to extract.
 - `engine` (optional) — one of
-  `tika | pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram`.
+  `pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram`.
   Overrides `EXTRACTION_ENGINE` for this single request. When omitted, the
   configured default is used. `auto` is a routing *mode* for ingest, not a
   concrete converter, so it is **not** accepted here — pick the engine you want
@@ -474,6 +473,15 @@ because they are **contracts with other services**:
 - `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
   the retrieval agent can use Qdrant's native hybrid query (RRF fusion) instead
   of the legacy client-side BM25.
+- `EMBEDDING_THREADS` caps the ONNX thread pool of the in-process fastembed
+  embedders (the sparse BM42 model, and the dense embedder when
+  `EMBEDDING_PROVIDER=fastembed`). ONNX otherwise grabs every core, saturating
+  CPU mid-ingest so the uvicorn event loop can't answer `/health` and Docker
+  restarts the container. `0` (default) = auto: leave 2 cores free for the event
+  loop; a positive value pins the count. Auto can't see a `cpus:` CFS quota, so
+  set it explicitly if you CPU-limit the container. `OMP_NUM_THREADS` (default
+  `4`) backstops onnxruntime's OpenMP/BLAS kernels and must be an env var (it is
+  read at native-library load time, before any Python runs).
 - `CHUNK_SPLIT_BY` selects the chunking strategy. The default `token` mode
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
@@ -509,9 +517,8 @@ because they are **contracts with other services**:
 
 | `EXTRACTION_ENGINE` | Status | Notes |
 |---|---|---|
-| `tika` | day-one | HTTP sidecar — reuses the existing `tika` container in the parent stack |
+| `kreuzberg` | day-one (default) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `pypdf` | day-one | In-process, PDF-only, lightweight |
-| `kreuzberg` | day-one | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |

@@ -1,9 +1,9 @@
 """HTTP client wrapper around the goldziher/kreuzberg API-server container.
 
-Lives next to the in-process Haystack converters (``TikaDocumentConverter``,
-``PyPDFToDocument`` etc.) but talks to a separate sidecar service over HTTP —
-analogous to how ``TikaDocumentConverter`` talks to the ``tika`` container.
-Keeps the ingestion-service image small and crash-isolates extraction.
+Lives next to the in-process Haystack converters (``PyPDFToDocument`` etc.)
+but talks to a separate sidecar service over HTTP — the same deployment model
+used for other extraction sidecars. Keeps the ingestion-service image small
+and crash-isolates extraction.
 
 The sidecar runs the Litestar-based API server bundled in the
 ``goldziher/kreuzberg`` image (``serve -H 0.0.0.0 -p 8000``). The
@@ -56,8 +56,8 @@ class KreuzbergRemoteConverter:
     """Posts each source file to the Kreuzberg ``/extract`` endpoint and turns
     the JSON response into a Haystack ``Document``.
 
-    One Document per source — matches the Tika converter's output shape, so
-    the rest of the pipeline (splitter → embedder → writer) is unchanged.
+    One Document per source — matches the standard Haystack converter output
+    shape, so the rest of the pipeline (splitter → embedder → writer) is unchanged.
     Auto-extracted Kreuzberg metadata (title, author, page_count, …) is
     intentionally dropped for v1; the pipeline meta passed in by the caller
     is the source of truth for Qdrant payload.
