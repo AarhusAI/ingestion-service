@@ -65,4 +65,12 @@ async def delete_document(
         ) from exc
 
     metrics.delete_requests_total.labels(outcome="success", code="none").inc()
+    # INFO so a deletion is visible in the logs (the /metrics counter and the
+    # uvicorn access line don't record how many chunks were actually removed).
+    # chunks_deleted=0 is a legitimate no-op (unknown / already-gone file_id).
+    log.info(
+        "deleted %d chunk(s) for file_id=%s",
+        chunks_deleted,
+        sanitize_for_log(file_id),
+    )
     return DeleteResponse(file_id=file_id, chunks_deleted=chunks_deleted)
