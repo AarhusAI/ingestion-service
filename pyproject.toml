@@ -10,7 +10,12 @@ dependencies = [
     "pydantic-settings>=2.0",
     "python-multipart>=0.0.9",
     "haystack-ai>=2.10.0",
-    "qdrant-haystack>=8.0.0",
+    # Capped to the tested major: qdrant-haystack renamed QdrantDocumentStore's
+    # public `.client` to a private `_client` between 8.x and 10.x, which
+    # silently broke our raw-client helpers (indexing.py). Floor at the version
+    # we run + test against; cap the major so the next breaking rename can't slip
+    # in on an unpinned rebuild (mirrors the qdrant-client `<3.0` cap below).
+    "qdrant-haystack>=10.3.0,<11.0.0",
     "fastembed-haystack>=1.5.0",
     "pypdf>=4.0",                   # PyPDFToDocument optional dep
     "qdrant-client>=1.12.0,<3.0",

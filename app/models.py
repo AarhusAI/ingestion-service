@@ -11,6 +11,7 @@ ErrorCode = Literal[
     "S3_FETCH_FAILED",
     "INVALID_REQUEST",
     "PIPELINE_FAILED",
+    "DELETE_FAILED",
 ]
 
 
@@ -67,6 +68,18 @@ class IngestError(BaseModel):
     status: bool = False
     error: str
     code: ErrorCode
+
+
+class DeleteResponse(BaseModel):
+    """Response body of ``DELETE /api/v1/documents/{file_id}``.
+
+    ``chunks_deleted`` is the number of chunks that existed for the file at
+    delete time; 0 means the file_id was unknown / already gone (idempotent 200).
+    """
+
+    status: bool = True
+    file_id: str
+    chunks_deleted: int
 
 
 class ChunkView(BaseModel):

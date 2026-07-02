@@ -22,6 +22,7 @@ from haystack import Pipeline
 from haystack.components.writers import DocumentWriter
 from haystack.utils import Secret
 from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
+from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app import metrics
@@ -41,6 +42,32 @@ _document_store: QdrantDocumentStore | None = None
 # (e.g. the extraction summary) can read the active engine without threading
 # settings through every call.
 _settings: Settings | None = None
+
+# Direct Qdrant client for raw point operations, cached module-level (see below).
+_raw_client: QdrantClient | None = None
+
+
+def _raw_qdrant_client() -> QdrantClient:
+    """Direct Qdrant client for raw point ops — count / scroll / delete by
+    ``meta.file_id`` payload filter — that ``QdrantDocumentStore``'s public API
+    doesn't expose.
+
+    Built from the same settings as ``app.services.qdrant_setup`` and cached.
+    We deliberately do NOT reach into ``QdrantDocumentStore``'s ``_client``:
+    that attribute is lazily initialized and its name changed across
+    qdrant-haystack versions (a public ``.client`` in the 8.x line became the
+    private ``_client`` in 10.x). The old ``_document_store.client`` usage broke
+    on that upgrade and went unnoticed because the overwrite/teardown delete
+    swallows the error and the inspection endpoint is off by default. A
+    settings-built client keeps these helpers stable across such upgrades.
+    """
+    global _raw_client
+    if _raw_client is None:
+        _raw_client = QdrantClient(
+            url=global_settings.qdrant_uri,
+            api_key=global_settings.qdrant_api_key,
+        )
+    return _raw_client
 
 
 class IndexingResult(NamedTuple):
@@ -306,8 +333,8 @@ def _delete_existing_by_file_id(file_id: str) -> None:
     if _document_store is None:
         return
     try:
-        _document_store.client.delete(
-            collection_name=_document_store.index,
+        _raw_qdrant_client().delete(
+            collection_name=global_settings.qdrant_index,
             points_selector=_file_id_filter(file_id),
         )
     except Exception:
@@ -329,8 +356,8 @@ def count_chunks_by_file_id(file_id: str) -> int:
     chunk-inspection endpoint). Raises if the pipeline isn't initialized."""
     if _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")
-    result = _document_store.client.count(
-        collection_name=_document_store.index,
+    result = _raw_qdrant_client().count(
+        collection_name=global_settings.qdrant_index,
         count_filter=_file_id_filter(file_id),
         exact=True,
     )
@@ -347,14 +374,47 @@ def scroll_chunks_by_file_id(file_id: str, limit: int, offset: str | None = None
     """
     if _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")
-    return _document_store.client.scroll(
-        collection_name=_document_store.index,
+    return _raw_qdrant_client().scroll(
+        collection_name=global_settings.qdrant_index,
         scroll_filter=_file_id_filter(file_id),
         limit=limit,
         offset=offset,
         with_payload=True,
         with_vectors=False,
     )
+
+
+def delete_by_file_id(file_id: str) -> int:
+    """Delete every chunk stored for ``file_id``; return how many were removed.
+
+    Backs the ``DELETE /api/v1/documents/{file_id}`` endpoint (Open WebUI calls
+    it when a file is deleted, so the vectors don't outlive the file). Idempotent:
+    an unknown / already-deleted file_id removes nothing and returns 0.
+
+    Serialized against a concurrent overwrite-ingest of the *same* file via the
+    per-file-id lock — the same lock ``run_indexing_pipeline`` takes — so a delete
+    can't interleave with that file's delete-then-write. Note the lock wraps a
+    ``threading.Lock`` and is process-local: callers must invoke this from a worker
+    thread (``asyncio.to_thread``), never the event loop, and cross-worker
+    delete/ingest ordering relies on Open WebUI not doing both at once for one file.
+
+    Unlike ``_delete_existing_by_file_id`` (which swallows every error to tolerate a
+    missing collection during the ingest teardown path), this does a direct,
+    non-swallowing ``client.delete`` so a genuine Qdrant failure surfaces to the
+    route as ``DELETE_FAILED`` instead of masquerading as success. The physical
+    collection is created at startup by ``qdrant_setup``, so once the pipeline is
+    ready the collection exists and neither the count nor the delete raises
+    "collection not found".
+    """
+    if _document_store is None:
+        raise RuntimeError("pipeline not initialized; call init_pipeline() first")
+    with _per_file_id_lock(file_id):
+        count = count_chunks_by_file_id(file_id)  # exact count *before* delete
+        _raw_qdrant_client().delete(
+            collection_name=global_settings.qdrant_index,
+            points_selector=_file_id_filter(file_id),
+        )
+        return count
 
 
 def _strip_control_fields(meta: dict) -> dict:

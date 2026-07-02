@@ -30,6 +30,17 @@ ingest_requests_total = Counter(
     ["outcome", "code"],
 )
 
+# Delete requests by outcome. ``code`` is "none" on success, else the
+# IngestError.code from the failure response (DELETE_FAILED, PIPELINE_FAILED for
+# a not-ready pipeline, …). Counted in the delete route handler, mirroring
+# ``ingest_requests_total``. Auth failures (401) happen in the dependency before
+# the handler and are not counted.
+delete_requests_total = Counter(
+    "delete_requests_total",
+    "Delete requests by outcome and classified error code.",
+    ["outcome", "code"],
+)
+
 # Wall-clock of the Haystack pipeline run (extract -> chunk -> embed -> write).
 ingest_duration_seconds = Histogram(
     "ingest_duration_seconds",
