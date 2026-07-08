@@ -29,25 +29,13 @@ tasks:
   setup:
     desc: First-time project setup
     cmds:
-      - task: up
+      - "{{.DOCKER_COMPOSE}} up -d --wait"
       - task: install
       - cmd: echo "Project is ready! Visit https://{{.COMPOSE_DOMAIN}}"
 
   # ==========================================================================
   # Container Management
   # ==========================================================================
-
-  up:
-    desc: Start containers
-    cmds:
-      - task: network:frontend
-      - "{{.DOCKER_COMPOSE}} up -d --wait"
-
-  build:
-    desc: Build container image
-    cmds:
-      - "{{.DOCKER_COMPOSE}} build"
-
   network:frontend:
     desc: Check frontend network exists (created by Traefik)
     internal: true
@@ -66,32 +54,6 @@ tasks:
             echo ""
             exit 1
           fi
-
-  open:
-    desc: Open site in browser
-    cmds:
-      - open "https://{{.COMPOSE_DOMAIN}}"
-
-  down:
-    desc: Stop containers
-    cmds:
-      - "{{.DOCKER_COMPOSE}} down"
-
-  restart:
-    desc: Restart containers
-    cmds:
-      - task: down
-      - task: up
-
-  logs:
-    desc: Tail container logs
-    cmds:
-      - "{{.DOCKER_COMPOSE}} logs -f {{.SERVICE}}"
-
-  shell:
-    desc: Open a shell in the ingestion container
-    cmds:
-      - "{{.PYTHON}} bash"
 
   # ==========================================================================
   # Code Quality

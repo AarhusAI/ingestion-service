@@ -17,7 +17,7 @@ The pipeline is configurable end-to-end:
 
 The repo is **standalone** — its own `docker-compose.yml`, its own `.env`, run from the service root. The Dockerfile is multi-stage: `dev` target has test/lint tools (ruff, pytest), `prod` target is runtime-only. Compose defaults to `dev`. Python 3.12 in the container; `pyproject.toml` requires `>=3.11`.
 
-The `frontend` Docker network is **external** — created by Traefik in the parent stack, or manually via `docker network create frontend` for standalone use. `task up` will refuse to start without it.
+The `frontend` Docker network is **external** — created by Traefik in the parent stack, or manually via `docker network create frontend` for standalone use. `docker compose up` fails without it (`task setup` brings the stack up with `docker compose up -d --wait` for first-time setup, but there is no `task up`/`down`/`restart`/`shell`/`logs` wrapper for day-to-day lifecycle — use `docker compose` directly for those).
 
 All `task` commands proxy through `docker compose exec ingestion` (`Taskfile.yml:11-12`). See `README.md` for the full task catalogue. Single test or test class:
 
@@ -33,6 +33,7 @@ FastAPI app wired in `app/main.py` (lifespan, health probes, router include). En
 - **`GET /health`** — liveness probe (always 200 if the process is running).
 - **`GET /health/ready`** — readiness probe. Returns 503 until `init_pipeline()` has finished (the sparse embedder downloads ~80 MB from HuggingFace on first boot) **and** Qdrant is reachable. The pipeline-warm gate is what keeps Docker / Kubernetes from routing traffic during cold start.
 - **`GET /api/v1/documents/{file_id}/chunks`** — read-only chunk inspection (`app/routes/inspect.py`). Scrolls Qdrant by `meta.file_id` (reusing `_file_id_filter()`) and returns the stored chunks + metadata + the persisted routing decision, for answering "what got indexed, and which engine handled it." Bearer-auth; gated by `ENABLE_INSPECTION_API` (default off → 404).
+- **`DELETE /api/v1/documents/{file_id}`** — removes a file's chunks from Qdrant (`app/routes/delete.py`), the symmetric counterpart to `PUT /api/v1/ingest`. Open WebUI calls it on file deletion so vectors don't outlive the file. Delegates to `delete_by_file_id()` (run in a worker thread — it takes a lock). Idempotent: unknown/gone `file_id` → 200 with `chunks_deleted: 0`. Bearer-auth; `503 PIPELINE_FAILED` until warm, `500 DELETE_FAILED` on a Qdrant error. Counted by the `delete_requests_total{outcome,code}` metric.
 - **`GET /metrics`** — Prometheus scrape endpoint (collectors in `app/metrics.py`). Bearer-auth via the same `API_KEY` as `/api/v1/ingest` (`Depends(verify_api_key)`, mirroring retrieval-agent — scrape job sends `Authorization: Bearer <API_KEY>`); gated by `METRICS_ENABLED` (default on → 404 when off). Ingest outcomes, per-stage latency (`pipeline_stage_duration_seconds`, including the embedding bottleneck), document size, and routing-decision counters. Instrumentation is unconditional; the flag only gates exposure.
 
 ### Pipeline (`app/pipelines/indexing.py`)

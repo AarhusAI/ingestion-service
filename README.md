@@ -159,7 +159,7 @@ Where to start reading when you need to change something:
 - **Only for the vision engines** (`vision-llm`, `hybrid-diagram`, or `auto`
   when it routes a diagram-heavy document): a [Gotenberg](https://gotenberg.dev/)
   sidecar for office→PDF rendering — bundled in this repo's own
-  `docker-compose.yml`, so `task up` starts it for you — **and** an
+  `docker-compose.yml`, so `docker compose up` starts it for you — **and** an
   OpenAI-compatible multimodal LLM endpoint (configured via `VISION_LLM_*`).
   These are inert unless a vision engine is actually selected.
 
@@ -188,21 +188,35 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 #                    EXTERNAL_INGESTION_API_KEY. You do not set the latter two
 #                    by hand.
 
-task setup          # starts container + installs dev deps (requires Traefik 'frontend' network)
-task logs           # tail ingestion container logs
+# The 'frontend' network is external (created by Traefik in the parent stack).
+# Running standalone, create it once — a no-op if it already exists:
+docker network create frontend
+
+task setup                           # docker compose up -d --wait + install dev deps
+docker compose logs -f ingestion     # tail ingestion container logs
 ```
 
-Common task commands:
+Container lifecycle has no `task` wrappers — the Taskfile only proxies
+in-container commands (`docker compose exec ingestion …`). Use `docker compose`
+directly for start/stop/build/shell:
 
 ```shell
-task up             # start containers (creates/verifies the 'frontend' network first)
-task down           # stop containers
-task restart        # down + up
-task build          # build the container image
-task shell          # open bash shell in the ingestion container
-task install        # reinstall deps (pip install '.[dev]')
-task lint           # run all linters (ruff check + format --check)
-task lint:fix       # auto-fix lint issues
+docker compose up -d                 # start containers
+docker compose down                  # stop containers
+docker compose restart ingestion     # restart just the app container
+docker compose build                 # rebuild the image
+docker compose exec ingestion bash   # open a shell in the ingestion container
+docker compose logs -f ingestion     # tail logs
+```
+
+The `task` commands (each runs inside the ingestion container):
+
+```shell
+task setup          # first-time: docker compose up -d --wait + install dev deps
+task install        # (re)install dev deps (pip install '.[dev]')
+task lint           # run all linters (ruff check + ruff format --check)
+task lint:fix       # auto-fix lint issues (ruff check --fix)
+task lint:format    # format code (ruff format)
 task test           # run all tests (pytest -v)
 task test:coverage  # run tests with coverage report
 task audit          # security audit: pip-audit (CVEs) + bandit (static scan); advisory only
@@ -424,6 +438,35 @@ curl -H "Authorization: Bearer $API_KEY" \
 }
 ```
 
+### `DELETE /api/v1/documents/{file_id}`
+
+Removes a file's chunks from Qdrant — the symmetric counterpart to
+`PUT /api/v1/ingest`. Open WebUI calls this when a file is deleted so its
+vectors don't outlive the file (the vector store lives here now, not inside
+Open WebUI, so OWUI's own cleanup no longer reaches it). Same Bearer-token auth
+as `/api/v1/ingest`.
+
+Idempotent: deleting an unknown or already-gone `file_id` returns `200` with
+`chunks_deleted: 0`, so the caller can fire it unconditionally and retry.
+
+```shell
+curl -X DELETE \
+  -H "Authorization: Bearer $API_KEY" \
+  http://localhost:8000/api/v1/documents/abc
+```
+
+```json
+{
+  "status": true,
+  "file_id": "abc",
+  "chunks_deleted": 42
+}
+```
+
+Returns `503` (`PIPELINE_FAILED`) until the pipeline has warmed up, and `500`
+(`DELETE_FAILED`) if the Qdrant delete itself fails — both use the same
+`IngestError` shape as `/api/v1/ingest`.
+
 ## Observability
 
 Four independently-toggleable layers of insight into how documents are ingested:
@@ -448,11 +491,12 @@ Four independently-toggleable layers of insight into how documents are ingested:
   default; `false` → 404). Bearer-authenticated with the same `API_KEY` as
   `/api/v1/ingest` (mirrors retrieval-agent) — the scrape job must send
   `Authorization: Bearer <API_KEY>`. Exposes:
-  `ingest_requests_total{outcome,code}`, `ingest_duration_seconds`,
-  `ingest_chunks`, `ingest_document_bytes`,
-  `extraction_route_total{engine,signal}`, and
-  `pipeline_stage_duration_seconds{stage}` (per component — the `dense_embedder`
-  stage is the bottleneck under load).
+  `ingest_requests_total{outcome,code}`, `delete_requests_total{outcome,code}`,
+  `ingest_duration_seconds`, `ingest_chunks`, `ingest_empty_total` (successful
+  ingests that wrote zero chunks — a silent extraction failure otherwise looks
+  healthy), `ingest_document_bytes`, `extraction_route_total{engine,signal}`,
+  and `pipeline_stage_duration_seconds{stage}` (per component — the
+  `dense_embedder` stage is the bottleneck under load).
 - **Chunk inspection** — `GET /api/v1/documents/{file_id}/chunks` (above),
   gated by `ENABLE_INSPECTION_API`.
 
