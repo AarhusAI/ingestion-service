@@ -288,7 +288,7 @@ sequenceDiagram
         R->>R: _extraction_summary builds response.extraction
     else exception
         R->>Q: _delete_ingest_version(file_id, version) as teardown
-        Note over Q: remove ONLY this run's points —<br/>the previous version stays live;<br/>collection-not-found is swallowed
+        Note over Q: remove ONLY this run's points —<br/>the previous version stays live.<br/>collection-not-found is swallowed
         R->>R: re-raise, route maps to IngestError.code
     end
     R->>L: release
