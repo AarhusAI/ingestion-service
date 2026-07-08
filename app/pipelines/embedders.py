@@ -8,6 +8,20 @@ required; sparse embedder is optional and gated by
 from app.config import Settings
 
 
+def _meta_fields_to_embed(settings: Settings) -> list[str]:
+    """Meta fields the embedders prepend to the text they encode.
+
+    The breadcrumb rides along as ``prefix + breadcrumb + separator +
+    content`` at embed time only — stored chunk content is untouched, so
+    nothing leaks into the answer context the retrieval agent builds.
+    Chunks without the field (non-markdown modes, content outside any
+    heading) are embedded unchanged.
+    """
+    if settings.embed_headers_breadcrumb:
+        return ["headers_breadcrumb"]
+    return []
+
+
 def build_dense_embedder(settings: Settings):
     """Required dense embedder. Returns a Haystack DocumentEmbedder component."""
     provider = settings.embedding_provider.lower()
@@ -23,6 +37,7 @@ def build_dense_embedder(settings: Settings):
             api_key=Secret.from_token(settings.embedding_api_key),
             model=settings.embedding_model,
             prefix=settings.embedding_prefix_doc,
+            meta_fields_to_embed=_meta_fields_to_embed(settings),
         )
 
     if provider == "fastembed":
@@ -37,6 +52,7 @@ def build_dense_embedder(settings: Settings):
             # (each forked worker would re-grab cores and defeat the thread cap).
             threads=settings.resolved_embedding_threads(),
             parallel=1,
+            meta_fields_to_embed=_meta_fields_to_embed(settings),
         )
 
     raise ValueError(
@@ -66,6 +82,8 @@ def build_sparse_embedder(settings: Settings):
             model=settings.sparse_embedding_model,
             threads=settings.resolved_embedding_threads(),
             parallel=1,
+            # Heading terms boost BM42 keyword matching too.
+            meta_fields_to_embed=_meta_fields_to_embed(settings),
         )
 
     raise ValueError(

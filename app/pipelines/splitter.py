@@ -101,8 +101,10 @@ class MarkdownChunker:
     HF-tokenizer-aware recursive splitter ``HuggingFaceTokenizerSplitter``
     uses when a section exceeds ``chunk_size``. Heading hierarchy is
     preserved on each chunk as ``meta.headers`` (flat list, outermost
-    first); chunk ordering is preserved via ``meta.split_id`` counted
-    across all output chunks.
+    first) plus ``meta.headers_breadcrumb`` (the same path joined with
+    ``" > "``, omitted when empty — the string form the embedders inject
+    via ``meta_fields_to_embed``); chunk ordering is preserved via
+    ``meta.split_id`` counted across all output chunks.
 
     Content without headings degrades gracefully — the whole document
     flows through stage 2, producing the same chunks ``token`` mode
@@ -169,6 +171,12 @@ class MarkdownChunker:
                     continue
                 headers = _headers_breadcrumb(section.metadata or {})
                 section_meta = {**base_meta, "headers": headers}
+                # Joined copy for the embedders: `meta_fields_to_embed`
+                # stringifies values with str(), which would render the list
+                # as "['Setup', 'Docker']". Omitted when there are no headings
+                # so the field's absence keeps the embed-time prefix inert.
+                if headers:
+                    section_meta["headers_breadcrumb"] = " > ".join(headers)
 
                 # Stage 2: token-pack only when the section actually exceeds
                 # the budget. Short sections keep their natural boundaries.

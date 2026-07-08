@@ -82,7 +82,8 @@ Each stage, in order:
   Three factory branches selected by `CHUNK_SPLIT_BY`: `HuggingFaceTokenizerSplitter`
   (token mode, default — measures chunk size in the embedding model's actual
   tokens), `MarkdownChunker` (markdown mode — splits on heading hierarchy first,
-  then token-packs sections; attaches `meta.headers` breadcrumb), or Haystack's
+  then token-packs sections; attaches the `meta.headers` breadcrumb plus its
+  joined string form `meta.headers_breadcrumb`), or Haystack's
   built-in `DocumentSplitter` (word / sentence / passage modes). All branches
   attach `meta.split_id` (sequential chunk index within the file).
 
@@ -91,7 +92,11 @@ Each stage, in order:
   `EMBEDDING_PROVIDER`: `openai-compat` (HTTP, the current `embed.itkdev.dk`
   path), `fastembed` (in-process), `tei` (HTTP, OpenAI-compatible wire format).
   Applies `EMBEDDING_PREFIX_DOC` to each chunk before embedding so e5/nomic
-  models get the prefix they were trained on.
+  models get the prefix they were trained on. With `EMBED_HEADERS_BREADCRUMB=true`
+  (default) both the dense and sparse embedders also prepend the chunk's
+  `meta.headers_breadcrumb` (markdown mode's section path, e.g.
+  `Setup > Docker > Networking`) to the text they encode — the full heading
+  hierarchy steers the vector while the stored chunk content stays clean.
 
 - **Sparse embedder** (optional, `app/pipelines/embedders.py`) — when
   `ENABLE_SPARSE_EMBEDDINGS=true`, adds a second named vector per chunk
@@ -542,7 +547,9 @@ because they are **contracts with other services**:
   512-token cap once the `passage: ` prefix is prepended. `markdown` mode is
   structure-aware: it splits on Markdown headings (`#`, `##`, `###`) first,
   then token-packs each section that exceeds `CHUNK_SIZE`, and writes the
-  heading breadcrumb to `meta.headers` on each chunk — most useful when the
+  heading breadcrumb to `meta.headers` on each chunk (plus the joined
+  `meta.headers_breadcrumb`, which `EMBED_HEADERS_BREADCRUMB=true` feeds into
+  the embedders) — most useful when the
   converter emits Markdown (Docling natively, Kreuzberg with table rendering).
   `word`, `sentence`, and `passage` delegate to Haystack's built-in
   `DocumentSplitter` and count in those units instead. Token and markdown

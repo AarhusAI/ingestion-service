@@ -125,6 +125,20 @@ def test_build_dense_unknown():
         build_dense_embedder(s)
 
 
+def test_build_dense_embeds_headers_breadcrumb_by_default():
+    """EMBED_HEADERS_BREADCRUMB defaults on: the embedder prepends
+    meta.headers_breadcrumb to the text it encodes (stored content untouched)."""
+    e = build_dense_embedder(_settings(embedding_provider="openai-compat"))
+    assert e.meta_fields_to_embed == ["headers_breadcrumb"]
+
+
+def test_build_dense_breadcrumb_opt_out():
+    e = build_dense_embedder(
+        _settings(embedding_provider="openai-compat", embed_headers_breadcrumb=False)
+    )
+    assert e.meta_fields_to_embed == []
+
+
 # -------------------- Sparse embedders --------------------
 
 
@@ -142,6 +156,20 @@ def test_build_sparse_unknown_provider():
     s = _settings(enable_sparse_embeddings=True, sparse_embedding_provider="banana")
     with pytest.raises(ValueError, match="Unknown SPARSE_EMBEDDING_PROVIDER"):
         build_sparse_embedder(s)
+
+
+def test_build_sparse_embeds_headers_breadcrumb_by_default():
+    """The sparse embedder gets the breadcrumb too — heading terms boost
+    BM42 keyword matching."""
+    e = build_sparse_embedder(_settings(enable_sparse_embeddings=True))
+    assert e.meta_fields_to_embed == ["headers_breadcrumb"]
+
+
+def test_build_sparse_breadcrumb_opt_out():
+    e = build_sparse_embedder(
+        _settings(enable_sparse_embeddings=True, embed_headers_breadcrumb=False)
+    )
+    assert e.meta_fields_to_embed == []
 
 
 # -------------------- Splitters --------------------
@@ -323,6 +351,7 @@ def test_markdown_chunker_splits_on_h1_h2(monkeypatch):
 
     assert [d.content for d in out] == ["# Intro\nfirst", "## Detail\nsecond"]
     assert [d.meta["headers"] for d in out] == [["Intro"], ["Intro", "Detail"]]
+    assert [d.meta["headers_breadcrumb"] for d in out] == ["Intro", "Intro > Detail"]
     assert [d.meta["split_id"] for d in out] == [0, 1]
 
 
@@ -344,6 +373,8 @@ def test_markdown_chunker_no_headers_passes_whole_text(monkeypatch):
     assert len(out) == 1
     assert out[0].content == "plain text body"
     assert out[0].meta["headers"] == []
+    # No headings → no breadcrumb field at all (embedders skip absent keys).
+    assert "headers_breadcrumb" not in out[0].meta
 
 
 def test_markdown_chunker_long_section_falls_back_to_token_split(monkeypatch):
@@ -369,6 +400,7 @@ def test_markdown_chunker_long_section_falls_back_to_token_split(monkeypatch):
     assert [d.content for d in out] == ["alpha beta gamma", "delta epsilon zeta"]
     # Same breadcrumb on both sub-chunks — the structural origin is preserved.
     assert [d.meta["headers"] for d in out] == [["Long"], ["Long"]]
+    assert [d.meta["headers_breadcrumb"] for d in out] == ["Long", "Long"]
     assert [d.meta["split_id"] for d in out] == [0, 1]
 
 

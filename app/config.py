@@ -335,6 +335,12 @@ class Settings(BaseSettings):
     # Not used at indexing time; kept here so the contract is documented in one
     # place and the retrieval agent's prefix can be sanity-checked against ours.
     embedding_prefix_query: str = "query: "
+    # Prepend the section-heading breadcrumb (meta.headers_breadcrumb, e.g.
+    # "Setup > Docker > Networking") to the text the embedders see — stored
+    # chunk content is untouched. Only has an effect with
+    # CHUNK_SPLIT_BY=markdown (the only mode that stamps the field). Flipping
+    # this changes vectors, so reindex for consistency.
+    embed_headers_breadcrumb: bool = True
 
     # ----- Sparse embedder (optional) -----
     enable_sparse_embeddings: bool = False
