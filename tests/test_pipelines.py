@@ -475,3 +475,187 @@ def test_markdown_chunker_split_id_monotonic(monkeypatch):
     # 1 short section + 2 stage-2 sub-chunks = 3 outputs, split_id 0..2.
     assert [d.meta["split_id"] for d in out] == [0, 1, 2]
     assert [d.meta["headers"] for d in out] == [["S"], ["L"], ["L"]]
+
+
+def test_markdown_chunker_merges_tiny_adjacent_sections(monkeypatch):
+    """Adjacent sections under chunk_min_size merge into one chunk, joined by
+    a blank line (the canonical Markdown block separator)."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("## A\ntiny one", metadata={"h1": "Doc", "h2": "A"}),
+            _section("## B\ntiny two", metadata={"h1": "Doc", "h2": "B"}),
+        ],
+    )
+
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=100, chunk_overlap=10, chunk_min_size=10)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert [d.content for d in out] == ["## A\ntiny one\n\n## B\ntiny two"]
+    assert out[0].meta["split_id"] == 0
+
+
+def test_markdown_chunker_min_size_zero_disables_merging(monkeypatch):
+    """chunk_min_size=0 (the component default) keeps every section separate —
+    pre-existing behavior is unchanged unless the merge is wired in."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("tiny one", metadata={"h1": "A"}),
+            _section("tiny two", metadata={"h1": "B"}),
+        ],
+    )
+
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=100, chunk_overlap=10)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert [d.content for d in out] == ["tiny one", "tiny two"]
+
+
+def test_markdown_chunker_tiny_section_not_merged_past_chunk_size(monkeypatch):
+    """A tiny section next to a huge one is emitted alone — merging would
+    create a chunk stage 2 immediately re-splits. The huge neighbor still
+    goes through stage 2 afterwards."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    huge = "a b c d e f g h i j k l"  # 12 tokens > chunk_size=10
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("t1 t2", metadata={"h1": "Tiny"}),
+            _section(huge, metadata={"h1": "Huge"}),
+        ],
+        token_pieces=["a b c d e f", "g h i j k l"],
+    )
+
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=10, chunk_overlap=0, chunk_min_size=5)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert [d.content for d in out] == ["t1 t2", "a b c d e f", "g h i j k l"]
+    assert [d.meta["headers"] for d in out] == [["Tiny"], ["Huge"], ["Huge"]]
+    assert [d.meta["split_id"] for d in out] == [0, 1, 2]
+
+
+def test_markdown_chunker_merge_stops_at_min_size(monkeypatch):
+    """Accumulation stops once an entry reaches the minimum — sections merge
+    up to chunk_min_size, not all the way to chunk_size, so normal-sized
+    sections keep their natural boundaries."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("a1 a2 a3", metadata={"h1": "A"}),
+            _section("b1 b2 b3", metadata={"h1": "B"}),
+            _section("c1 c2 c3", metadata={"h1": "C"}),
+            _section("d1 d2 d3", metadata={"h1": "D"}),
+        ],
+    )
+
+    # min=5: A(3)+B(3)=6 >= min stops the first entry; C+D likewise.
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=20, chunk_overlap=0, chunk_min_size=5)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert [d.content for d in out] == ["a1 a2 a3\n\nb1 b2 b3", "c1 c2 c3\n\nd1 d2 d3"]
+
+
+def test_markdown_chunker_trailing_tiny_folds_backward(monkeypatch):
+    """A trailing section under the minimum folds into the previous chunk
+    when it fits — the 'tiny footer' case."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("w1 w2 w3 w4 w5 w6", metadata={"h1": "Body"}),
+            _section("bye", metadata={"h1": "Footer"}),
+        ],
+    )
+
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=10, chunk_overlap=0, chunk_min_size=5)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert [d.content for d in out] == ["w1 w2 w3 w4 w5 w6\n\nbye"]
+
+
+def test_markdown_chunker_trailing_tiny_emitted_when_no_room(monkeypatch):
+    """When the backward fold would exceed chunk_size, the trailing tiny
+    section is emitted on its own — never dropped."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("w1 w2 w3 w4 w5 w6 w7 w8 w9", metadata={"h1": "Body"}),
+            _section("bye now", metadata={"h1": "Footer"}),
+        ],
+    )
+
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=10, chunk_overlap=0, chunk_min_size=5)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert [d.content for d in out] == ["w1 w2 w3 w4 w5 w6 w7 w8 w9", "bye now"]
+    assert [d.meta["headers"] for d in out] == [["Body"], ["Footer"]]
+
+
+def test_markdown_chunker_merged_headers_common_prefix(monkeypatch):
+    """A merged chunk carries the longest common prefix of its sections'
+    heading paths — the deepest heading true of the whole chunk (each
+    section's own heading line survives in the content)."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("## A\ntiny", metadata={"h1": "Doc", "h2": "A"}),
+            _section("## B\ntiny", metadata={"h1": "Doc", "h2": "B"}),
+        ],
+    )
+
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=100, chunk_overlap=10, chunk_min_size=10)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert len(out) == 1
+    assert out[0].meta["headers"] == ["Doc"]
+    assert out[0].meta["headers_breadcrumb"] == "Doc"
+
+
+def test_markdown_chunker_merged_disjoint_headers_drop_breadcrumb(monkeypatch):
+    """Sections with no shared ancestor merge with headers=[] and no
+    breadcrumb key — absence beats a wrong breadcrumb at embed time."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section("# X\ntiny", metadata={"h1": "X"}),
+            _section("# Y\ntiny", metadata={"h1": "Y"}),
+        ],
+    )
+
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=100, chunk_overlap=10, chunk_min_size=10)
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert len(out) == 1
+    assert out[0].meta["headers"] == []
+    assert "headers_breadcrumb" not in out[0].meta

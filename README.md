@@ -82,6 +82,7 @@ Each stage, in order:
   Three factory branches selected by `CHUNK_SPLIT_BY`: `HuggingFaceTokenizerSplitter`
   (token mode, default — measures chunk size in the embedding model's actual
   tokens), `MarkdownChunker` (markdown mode — splits on heading hierarchy first,
+  merges sections smaller than `CHUNK_MIN_SIZE` tokens into their neighbors,
   then token-packs sections; attaches the `meta.headers` breadcrumb plus its
   joined string form `meta.headers_breadcrumb`), or Haystack's
   built-in `DocumentSplitter` (word / sentence / passage modes). All branches
@@ -546,6 +547,9 @@ because they are **contracts with other services**:
   so chunks respect the model's context window — important for e5-large's
   512-token cap once the `passage: ` prefix is prepended. `markdown` mode is
   structure-aware: it splits on Markdown headings (`#`, `##`, `###`) first,
+  merges adjacent sections smaller than `CHUNK_MIN_SIZE` tokens (default 100,
+  `0` disables — never past `CHUNK_SIZE`; merged chunks keep the
+  longest-common-prefix heading path so the breadcrumb stays truthful),
   then token-packs each section that exceeds `CHUNK_SIZE`, and writes the
   heading breadcrumb to `meta.headers` on each chunk (plus the joined
   `meta.headers_breadcrumb`, which `EMBED_HEADERS_BREADCRUMB=true` feeds into

@@ -104,3 +104,14 @@ def test_raster_signal_threshold_defaults():
     assert s.extraction_router_min_body_images == 1
     assert s.extraction_router_min_image_emu == 1_500_000_000_000
     assert s.extraction_router_min_image_word_ratio == 0.0
+
+
+def test_chunk_min_size_rejects_negative():
+    with pytest.raises(ValidationError, match="CHUNK_MIN_SIZE must be >= 0"):
+        Settings(_env_file=None, **{**_BASE, "chunk_min_size": -1})
+
+
+def test_chunk_min_size_rejects_above_chunk_size():
+    """A minimum above the maximum is nonsensical — fail fast at startup."""
+    with pytest.raises(ValidationError, match="must not exceed"):
+        Settings(_env_file=None, **{**_BASE, "chunk_min_size": 500, "chunk_size": 400})

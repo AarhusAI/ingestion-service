@@ -97,7 +97,10 @@ class MarkdownChunker:
 
     Stage 1 splits on Markdown headers (``#`` / ``##`` / ``###``) using
     langchain's ``MarkdownHeaderTextSplitter`` so chunks align with
-    section boundaries. Stage 2 token-packs each section through the same
+    section boundaries. Sections smaller than ``chunk_min_size`` tokens
+    then merge into adjacent ones (never past ``chunk_size``; 0 disables)
+    so heading-dense docs don't emit tiny chunks that embed poorly.
+    Stage 2 token-packs each section through the same
     HF-tokenizer-aware recursive splitter ``HuggingFaceTokenizerSplitter``
     uses when a section exceeds ``chunk_size``. Heading hierarchy is
     preserved on each chunk as ``meta.headers`` (flat list, outermost
@@ -126,6 +129,7 @@ class MarkdownChunker:
         chunk_size: int,
         chunk_overlap: int,
         tokenizer_revision: str = "",
+        chunk_min_size: int = 0,
     ):
         from langchain_text_splitters import (
             MarkdownHeaderTextSplitter,
@@ -145,6 +149,7 @@ class MarkdownChunker:
             chunk_overlap=chunk_overlap,
         )
         self._chunk_size = chunk_size
+        self._min_size = chunk_min_size
         # Stage-2 trigger uses the same tokenizer the embedding model uses,
         # so "would this section blow the model's context window?" is the
         # real question being answered.
@@ -164,12 +169,13 @@ class MarkdownChunker:
             # Document with the full text and empty metadata, which then
             # flows straight to stage 2 — same chunks as token mode.
             sections = self._header_splitter.split_text(text)
+            pieces = [
+                (section.page_content, _headers_breadcrumb(section.metadata or {}))
+                for section in sections
+                if section.page_content and section.page_content.strip()
+            ]
 
-            for section in sections:
-                piece_text = section.page_content
-                if not piece_text or not piece_text.strip():
-                    continue
-                headers = _headers_breadcrumb(section.metadata or {})
+            for piece_text, headers in self._merge_small_sections(pieces):
                 section_meta = {**base_meta, "headers": headers}
                 # Joined copy for the embedders: `meta_fields_to_embed`
                 # stringifies values with str(), which would render the list
@@ -196,6 +202,57 @@ class MarkdownChunker:
                     global_idx += 1
         return {"documents": out}
 
+    def _merge_small_sections(
+        self, pieces: list[tuple[str, list[str]]]
+    ) -> list[tuple[str, list[str]]]:
+        """Greedy forward merge of adjacent sections smaller than chunk_min_size.
+
+        Accumulation stops once an entry reaches the minimum — normal-sized
+        sections keep their natural boundaries — and never crosses
+        ``chunk_size``, so a tiny section next to a huge one is emitted alone
+        rather than creating something stage 2 would re-split. A trailing
+        remainder still under the minimum folds backward into the previous
+        entry when it fits. Merged entries carry the longest common prefix of
+        their sections' heading paths (each section's own heading line stays
+        in the text via ``strip_headers=False``).
+
+        Token budget is the sum of per-section counts; stage 2 re-counts the
+        joined text, backstopping any drift from the ``"\\n\\n"`` seams.
+        """
+        if self._min_size <= 0 or len(pieces) < 2:
+            return pieces
+
+        merged: list[tuple[str, list[str], int]] = []  # (text, headers, tokens)
+
+        def _fold(target: tuple[str, list[str], int], text, headers, tokens):
+            prev_text, prev_headers, prev_tokens = target
+            return (
+                prev_text + "\n\n" + text,
+                _headers_common_prefix(prev_headers, headers),
+                prev_tokens + tokens,
+            )
+
+        for text, headers in pieces:
+            tokens = self._count_tokens(text)
+            if (
+                merged
+                and merged[-1][2] < self._min_size
+                and merged[-1][2] + tokens <= self._chunk_size
+            ):
+                merged[-1] = _fold(merged[-1], text, headers, tokens)
+            else:
+                merged.append((text, headers, tokens))
+
+        if (
+            len(merged) >= 2
+            and merged[-1][2] < self._min_size
+            and merged[-2][2] + merged[-1][2] <= self._chunk_size
+        ):
+            tail = merged.pop()
+            merged[-1] = _fold(merged[-1], *tail)
+
+        return [(text, headers) for text, headers, _ in merged]
+
 
 def _headers_breadcrumb(md_meta: dict) -> list[str]:
     """Flatten langchain's ``{"h1": ..., "h2": ...}`` into ``["...", "..."]``
@@ -203,6 +260,18 @@ def _headers_breadcrumb(md_meta: dict) -> list[str]:
     chunk under ``## Section`` (no enclosing ``# Title``) returns
     ``["Section"]``, not ``["", "Section"]``."""
     return [md_meta[k] for k in ("h1", "h2", "h3") if md_meta.get(k)]
+
+
+def _headers_common_prefix(a: list[str], b: list[str]) -> list[str]:
+    """Longest common prefix of two heading paths — the deepest heading that
+    is true of *both* merged sections. Empty when they share no ancestor,
+    which downstream renders as "no breadcrumb" rather than a wrong one."""
+    prefix: list[str] = []
+    for x, y in zip(a, b, strict=False):
+        if x != y:
+            break
+        prefix.append(x)
+    return prefix
 
 
 def build_splitter(s: Settings):
@@ -233,6 +302,7 @@ def build_splitter(s: Settings):
             chunk_size=s.chunk_size,
             chunk_overlap=s.chunk_overlap,
             tokenizer_revision=s.tokenizer_revision,
+            chunk_min_size=s.chunk_min_size,
         )
 
     # Haystack handles word/sentence/passage natively; chunk_size is in those units.

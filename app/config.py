@@ -314,6 +314,24 @@ class Settings(BaseSettings):
     chunk_size: int = 400
     chunk_overlap: int = 80
     chunk_split_by: str = "token"  # token | markdown | word | sentence | passage
+    # markdown mode only: sections smaller than this many tokens merge into
+    # adjacent ones (never past chunk_size), so heading-dense docs don't
+    # produce tiny chunks that embed poorly and waste Qdrant points. 0
+    # disables merging. Changing it changes chunk boundaries, so reindex for
+    # consistency.
+    chunk_min_size: int = 100
+
+    @model_validator(mode="after")
+    def _validate_chunk_sizes(self):
+        if self.chunk_min_size < 0:
+            raise ValueError(f"CHUNK_MIN_SIZE must be >= 0; got {self.chunk_min_size}")
+        if self.chunk_min_size > self.chunk_size:
+            raise ValueError(
+                f"CHUNK_MIN_SIZE ({self.chunk_min_size}) must not exceed "
+                f"CHUNK_SIZE ({self.chunk_size})"
+            )
+        return self
+
     # Optional override; empty falls back to embedding_model. Used in token
     # and markdown modes.
     tokenizer_model: str = ""
