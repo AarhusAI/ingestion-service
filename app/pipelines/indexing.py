@@ -4,10 +4,14 @@ Builds the pipeline once at lifespan startup and caches it as module-level
 state — Haystack pipelines are non-trivial to construct so this matters for
 per-request latency.
 
-Idempotency: when ``meta.overwrite`` is true (default), existing Qdrant
-points with matching ``meta.file_id`` are deleted before writing new chunks.
-On any pipeline failure the same delete runs as teardown — partial writes
-are not left behind.
+Idempotency: every run stamps a fresh ``meta.ingest_version`` (uuid) onto its
+chunks, which gives them new Haystack document IDs — so the new version is
+written *alongside* any existing points (blue/green). On success with
+``meta.overwrite`` true (default), stale versions (``meta.file_id`` matches,
+``meta.ingest_version`` differs — including pre-versioning points that lack
+the field) are deleted afterwards. On failure, only the failed run's own
+version is torn down — the previously indexed version stays live and
+searchable throughout.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from typing import NamedTuple
 
@@ -249,6 +254,19 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
     ``collection_type``, ``name``, ``source``, ``user_id``, ``overwrite``).
     Control fields (``overwrite``) are stripped before the meta hits Qdrant.
 
+    Versioned (blue/green) overwrite: each run stamps ``meta.ingest_version``
+    onto its chunks, changing their Haystack document IDs so they coexist with
+    the previous version's points instead of upserting over them. The old
+    version is only deleted *after* the new one is fully written (and only
+    when it produced at least one chunk — a zero-chunk extraction never
+    replaces a good index with nothing). A failed run tears down only its own
+    version, so neither a failed overwrite nor a failed append
+    (``overwrite=false``) can destroy previously indexed data. Note the
+    version stamp means an ``overwrite=false`` retry with identical content
+    now accumulates duplicate points rather than silently upserting onto the
+    same IDs — Open WebUI always sends ``overwrite=true``, so this only
+    affects manual multipart callers.
+
     Concurrent ingests of the same ``file_id`` are serialized via
     :func:`_per_file_id_lock` — see the comment on ``_file_id_locks`` for
     the race this closes (sec.md Finding 7).
@@ -258,12 +276,11 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
 
     file_id = meta["file_id"]
     overwrite = meta.get("overwrite", True)
+    ingest_version = uuid.uuid4().hex
 
     with _per_file_id_lock(file_id):
-        if overwrite:
-            _delete_existing_by_file_id(file_id)
-
         pipeline_meta = _strip_control_fields(meta)
+        pipeline_meta["ingest_version"] = ingest_version
         try:
             started = time.monotonic()
             # include_outputs_from exposes the converter's stamped meta (the
@@ -278,14 +295,21 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
             chunks_count = result["writer"]["documents_written"]
             extraction = _extraction_summary(result)
             metrics.ingest_chunks.observe(chunks_count)
+            if overwrite and chunks_count > 0:
+                # New version fully written — sweep every other version of this
+                # file (including pre-versioning points without the field).
+                _delete_stale_versions(file_id, ingest_version)
             if chunks_count == 0:
                 # A zero-chunk ingest reports success to the caller, so this
                 # is the only operator-visible signal that extraction yielded
                 # nothing (e.g. a sidecar response-shape drift) — see
-                # ingest_empty_total for the aggregate.
+                # ingest_empty_total for the aggregate. Stale-version cleanup
+                # is skipped above: an empty extraction must not replace a
+                # previously good index with nothing.
                 metrics.ingest_empty_total.inc()
                 log.warning(
-                    "ingest wrote 0 chunks for file_id=%s — extraction produced no content",
+                    "ingest wrote 0 chunks for file_id=%s — extraction produced no "
+                    "content; any previously indexed version is kept",
                     sanitize_for_log(file_id),
                 )
             if extraction:
@@ -305,10 +329,13 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
             return IndexingResult(chunks_count=chunks_count, extraction=extraction)
         except Exception:
             log.exception(
-                "ingest failed for file_id=%s; rolling back",
+                "ingest failed for file_id=%s; rolling back version=%s",
                 sanitize_for_log(file_id),
+                ingest_version,
             )
-            _delete_existing_by_file_id(file_id)
+            # Tear down only THIS run's points — the previously indexed
+            # version (if any) stays live, whatever the overwrite mode.
+            _delete_ingest_version(file_id, ingest_version)
             raise
 
 
@@ -329,19 +356,46 @@ def _extraction_summary(result: dict) -> dict | None:
     return {"engine": engine, "route": route}
 
 
-def _delete_existing_by_file_id(file_id: str) -> None:
-    if _document_store is None:
-        return
+def _delete_stale_versions(file_id: str, keep_version: str) -> None:
+    """Delete every point of ``file_id`` EXCEPT the just-written version.
+
+    Runs after a successful overwrite write. ``must_not`` on
+    ``meta.ingest_version`` also matches points that predate versioning (the
+    field is absent), so the first versioned overwrite sweeps legacy points
+    too. Swallows errors — a failed sweep leaves the old version serving
+    alongside the new one (duplicates, not data loss), and the next
+    successful overwrite cleans both up.
+    """
     try:
         _raw_qdrant_client().delete(
             collection_name=global_settings.qdrant_index,
-            points_selector=_file_id_filter(file_id),
+            points_selector=_stale_version_filter(file_id, keep_version),
         )
     except Exception:
-        # If the collection doesn't exist yet (first ever ingest), this is fine.
-        log.debug(
-            "delete-by-file_id skipped (collection likely empty): file_id=%s",
+        log.warning(
+            "stale-version sweep failed for file_id=%s (keep=%s) — old chunks "
+            "remain until the next successful overwrite",
             sanitize_for_log(file_id),
+            keep_version,
+            exc_info=True,
+        )
+
+
+def _delete_ingest_version(file_id: str, version: str) -> None:
+    """Teardown: delete only the given run's points, leaving other versions
+    untouched. Swallows errors — the collection may not exist yet (extraction
+    failed before the first-ever write), and an orphaned partial version is
+    swept by the next successful overwrite's stale-version cleanup."""
+    try:
+        _raw_qdrant_client().delete(
+            collection_name=global_settings.qdrant_index,
+            points_selector=_version_filter(file_id, version),
+        )
+    except Exception:
+        log.debug(
+            "version teardown skipped (collection likely empty): file_id=%s version=%s",
+            sanitize_for_log(file_id),
+            version,
         )
 
 
@@ -349,6 +403,25 @@ def _file_id_filter(file_id: str) -> Filter:
     """The Qdrant filter for every point belonging to one file — the single
     contract shared by delete, count, and the chunk-inspection scroll."""
     return Filter(must=[FieldCondition(key="meta.file_id", match=MatchValue(value=file_id))])
+
+
+def _version_filter(file_id: str, version: str) -> Filter:
+    """Points belonging to one specific ingest run of one file."""
+    return Filter(
+        must=[
+            FieldCondition(key="meta.file_id", match=MatchValue(value=file_id)),
+            FieldCondition(key="meta.ingest_version", match=MatchValue(value=version)),
+        ]
+    )
+
+
+def _stale_version_filter(file_id: str, keep_version: str) -> Filter:
+    """Points of one file that do NOT carry ``keep_version`` — including
+    pre-versioning points where ``meta.ingest_version`` is absent."""
+    return Filter(
+        must=[FieldCondition(key="meta.file_id", match=MatchValue(value=file_id))],
+        must_not=[FieldCondition(key="meta.ingest_version", match=MatchValue(value=keep_version))],
+    )
 
 
 def count_chunks_by_file_id(file_id: str) -> int:
@@ -398,7 +471,7 @@ def delete_by_file_id(file_id: str) -> int:
     thread (``asyncio.to_thread``), never the event loop, and cross-worker
     delete/ingest ordering relies on Open WebUI not doing both at once for one file.
 
-    Unlike ``_delete_existing_by_file_id`` (which swallows every error to tolerate a
+    Unlike ``_delete_ingest_version`` (which swallows every error to tolerate a
     missing collection during the ingest teardown path), this does a direct,
     non-swallowing ``client.delete`` so a genuine Qdrant failure surfaces to the
     route as ``DELETE_FAILED`` instead of masquerading as success. The physical

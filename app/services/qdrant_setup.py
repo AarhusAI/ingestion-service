@@ -22,7 +22,9 @@ def _client() -> QdrantClient:
 
 
 def ensure_payload_indexes() -> None:
-    """Create the keyword + tenant payload index on ``meta.collection_name``.
+    """Create the payload indexes: the tenant index on ``meta.collection_name``
+    plus plain keyword indexes (collection_type, languages, file_id,
+    ingest_version).
 
     Idempotent — Qdrant returns 409 if the index already exists, which we swallow.
     No-op if the collection doesn't yet exist (first ingest creates it; we'll
@@ -60,40 +62,36 @@ def ensure_payload_indexes() -> None:
         else:
             raise
 
-    # Secondary index on collection_type for admin queries; not used for retrieval filtering.
-    field_name_type = "meta.collection_type"
-    try:
-        client.create_payload_index(
-            collection_name=index_name,
-            field_name=field_name_type,
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        log.info("created payload index on %s.%s", index_name, field_name_type)
-    except UnexpectedResponse as exc:
-        if exc.status_code == 409:
-            log.debug("payload index on %s.%s already exists", index_name, field_name_type)
-        else:
-            raise
-
-    # Multilingual filtering — ``meta.languages`` is a list of ISO 639-1
-    # codes populated by the converter when language detection runs
-    # (Kreuzberg's ``detected_languages``). KEYWORD on a list-valued field
-    # supports MatchAny — perfect for "any of these languages". No consumer
-    # yet on the retrieval-agent side, but adding the index now means new
-    # ingests are searchable as soon as the filter call site lands.
-    field_name_lang = "meta.languages"
-    try:
-        client.create_payload_index(
-            collection_name=index_name,
-            field_name=field_name_lang,
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        log.info("created payload index on %s.%s", index_name, field_name_lang)
-    except UnexpectedResponse as exc:
-        if exc.status_code == 409:
-            log.debug("payload index on %s.%s already exists", index_name, field_name_lang)
-        else:
-            raise
+    # Plain keyword indexes:
+    # - meta.collection_type: admin queries; not used for retrieval filtering.
+    # - meta.languages: ISO 639-1 codes from converter language detection
+    #   (Kreuzberg's ``detected_languages``). KEYWORD on a list-valued field
+    #   supports MatchAny — perfect for "any of these languages". No consumer
+    #   yet on the retrieval-agent side, but adding the index now means new
+    #   ingests are searchable as soon as the filter call site lands.
+    # - meta.file_id: every point op filters on it — the versioned overwrite
+    #   sweep/teardown, DELETE /api/v1/documents/{file_id}, and the
+    #   chunk-inspection count/scroll. Without the index those are full scans.
+    # - meta.ingest_version: the versioned (blue/green) overwrite filters on it
+    #   with must/must_not alongside file_id (see app/pipelines/indexing.py).
+    for plain_field in (
+        "meta.collection_type",
+        "meta.languages",
+        "meta.file_id",
+        "meta.ingest_version",
+    ):
+        try:
+            client.create_payload_index(
+                collection_name=index_name,
+                field_name=plain_field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            log.info("created payload index on %s.%s", index_name, plain_field)
+        except UnexpectedResponse as exc:
+            if exc.status_code == 409:
+                log.debug("payload index on %s.%s already exists", index_name, plain_field)
+            else:
+                raise
 
 
 def health_check() -> bool:

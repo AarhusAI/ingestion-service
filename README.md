@@ -108,16 +108,25 @@ Each stage, in order:
 
 ### Idempotency
 
-Before the pipeline runs, `_delete_existing_by_file_id()` removes any existing
-Qdrant points whose `meta.file_id` matches the incoming request (when
-`overwrite=true`, which is the default). If the pipeline throws at any stage,
-the same delete runs again as teardown. The contract for callers is:
+Overwrites are **versioned (blue/green)**: every run stamps a fresh
+`meta.ingest_version` onto its chunks (which also gives them new Haystack
+document IDs), so the new version is written *alongside* any existing points.
+Only after the pipeline succeeds — and produced at least one chunk — does
+`_delete_stale_versions()` sweep every other version of that `meta.file_id`
+(when `overwrite=true`, the default). If the pipeline throws at any stage,
+`_delete_ingest_version()` tears down only the failed run's own points. The
+contract for callers is:
 
 - A `status: true` response means the file is fully indexed (all chunks
-  written, all vectors present).
-- Any other outcome means the file's chunks are absent from Qdrant — partial
-  writes don't leak through.
-- Retries with the same `file_id` are safe; no duplicate vectors.
+  written, all vectors present) and stale versions are swept.
+- A failed run leaves the **previously indexed version untouched** — the file
+  stays searchable with its old content; the failed run's partial writes are
+  torn down.
+- A run that extracts zero chunks reports success but keeps the previous
+  version — an empty extraction never replaces a good index with nothing.
+- Retries with the same `file_id` are safe; no duplicate vectors (the query
+  window where old and new versions coexist lasts only until the sweep, i.e.
+  moments after the write).
 
 Open WebUI's reindex action depends on this contract.
 
