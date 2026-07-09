@@ -77,7 +77,7 @@ _DIAGRAM_USER = (
     "```\n\n"
     "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
     "quotes; one edge per arrow; decision branches use `-->|label|`; group each swim-lane with "
-    "`subgraph \"Lane name\" ... end`. Output Markdown only."
+    '`subgraph "Lane name" ... end`. Output Markdown only.'
 )
 
 
@@ -110,7 +110,7 @@ _DIAGRAM_TOPOLOGY_USER = (
     "```\n\n"
     "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
     "quotes; one edge per arrow following its direction; decision branches use `-->|label|`; "
-    "group each swim-lane with `subgraph \"Lane name\" ... end`. Output only the mermaid block."
+    'group each swim-lane with `subgraph "Lane name" ... end`. Output only the mermaid block.'
 )
 
 
@@ -172,7 +172,7 @@ _FIGURE_USER = (
     "```\n\n"
     "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
     "quotes; one edge per arrow following its direction; decision branches use `-->|label|`; "
-    "group each lane/actor region with `subgraph \"Lane name\" ... end`. If there is no figure, "
+    'group each lane/actor region with `subgraph "Lane name" ... end`. If there is no figure, '
     "output nothing."
 )
 

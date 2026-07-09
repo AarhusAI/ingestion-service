@@ -132,9 +132,7 @@ class Settings(BaseSettings):
         allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         upper = v.upper()
         if upper not in allowed:
-            raise ValueError(
-                f"LOG_LEVEL_APP must be one of {sorted(allowed)} or empty; got {v!r}"
-            )
+            raise ValueError(f"LOG_LEVEL_APP must be one of {sorted(allowed)} or empty; got {v!r}")
         return upper
 
     @field_validator("log_format")

@@ -398,9 +398,7 @@ def test_min_columns_one_keeps_single_column(tmp_source):
         ],
     )
 
-    c = KreuzbergRemoteConverter(
-        kreuzberg_url="http://fake-kreuzberg:8000", min_table_columns=1
-    )
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000", min_table_columns=1)
     out = c.run(sources=[tmp_source])["documents"]
 
     assert "## Tables" in out[0].content

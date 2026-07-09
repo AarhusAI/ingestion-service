@@ -85,8 +85,8 @@ class RoutingConverter:
             source_meta = _meta_for(meta, i)
             # The diagram route pins the diagram profile; pass it only to a
             # profile-aware converter (a non-vision default engine never gets it).
-            pinned_profile = (
-                engine == self._diagram_engine and getattr(converter, "accepts_profile", False)
+            pinned_profile = engine == self._diagram_engine and getattr(
+                converter, "accepts_profile", False
             )
             # INFO (not DEBUG): the per-document routing decision is high-value
             # operational signal, visible at the default level. The detailed

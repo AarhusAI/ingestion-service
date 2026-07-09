@@ -41,9 +41,9 @@ def _image_drawing(cx, cy):
     return (
         f'<w:drawing><wp:anchor><wp:extent cx="{cx}" cy="{cy}"/>'
         '<wp:effectExtent l="0" t="0" r="0" b="0"/>'
-        '<a:graphic><a:graphicData><pic:pic><pic:blipFill>'
+        "<a:graphic><a:graphicData><pic:pic><pic:blipFill>"
         '<a:blip r:embed="rId1"/>'
-        '</pic:blipFill></pic:pic></a:graphicData></a:graphic>'
+        "</pic:blipFill></pic:pic></a:graphicData></a:graphic>"
         "</wp:anchor></w:drawing>"
     )
 
@@ -106,9 +106,7 @@ def test_missing_app_xml_uses_body_word_fallback(tmp_path):
     # 30 boxes, 2 body words outside any box → 30/3 = 10 ≥ 2.0.
     xml = (
         "<w:document><w:body>"
-        "<w:p><w:r><w:t>one two</w:t></w:r></w:p>"
-        + _textboxes(30)
-        + "</w:body></w:document>"
+        "<w:p><w:r><w:t>one two</w:t></w:r></w:p>" + _textboxes(30) + "</w:body></w:document>"
     )
     src = _write_docx(tmp_path, xml, app_words=None)
     assert detect_engine(src, _settings()) == "vision-llm"
@@ -178,7 +176,7 @@ def test_effect_extent_not_mistaken_for_real_extent(tmp_path):
     drawing = (
         '<w:drawing><wp:anchor><wp:extent cx="150000" cy="150000"/>'
         '<wp:effectExtent l="0" t="0" r="99999999" b="99999999"/>'
-        '<a:graphic><a:graphicData><pic:pic><pic:blipFill>'
+        "<a:graphic><a:graphicData><pic:pic><pic:blipFill>"
         '<a:blip r:embed="rId1"/>'
         "</pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing>"
     )

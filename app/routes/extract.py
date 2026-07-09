@@ -144,8 +144,7 @@ def _validate_profile(raw) -> str | None:
         raise HTTPException(
             status_code=400,
             detail=IngestError(
-                error=f"Unknown profile={raw!r} "
-                f"(supported: {' | '.join(sorted(KNOWN_PROFILES))})",
+                error=f"Unknown profile={raw!r} (supported: {' | '.join(sorted(KNOWN_PROFILES))})",
                 code="INVALID_REQUEST",
             ).model_dump(),
         )

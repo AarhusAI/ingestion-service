@@ -33,10 +33,7 @@ def _rels(*pairs: tuple) -> str:
         rid, target = pair[0], pair[1]
         mode = pair[2] if len(pair) > 2 else None
         mode_attr = f' TargetMode="{mode}"' if mode else ""
-        body += (
-            f'<Relationship Id="{rid}" Type="http://x/image" '
-            f'Target="{target}"{mode_attr}/>'
-        )
+        body += f'<Relationship Id="{rid}" Type="http://x/image" Target="{target}"{mode_attr}/>'
     return f"<Relationships>{body}</Relationships>"
 
 
@@ -86,9 +83,7 @@ def test_unreferenced_media_excluded(tmp_path):
 
 def test_sorted_largest_first(tmp_path):
     body = (
-        _drawing("rId1", 2000, 1000)
-        + _drawing("rId2", 3000, 3000)
-        + _drawing("rId3", 2000, 2000)
+        _drawing("rId1", 2000, 1000) + _drawing("rId2", 3000, 3000) + _drawing("rId3", 2000, 2000)
     )
     src = _docx(
         tmp_path,
@@ -188,6 +183,6 @@ def test_missing_rels_returns_empty(tmp_path):
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(
             "word/document.xml",
-            f'<w:document {_NS}><w:body>{_drawing("rId1", 2000, 2000)}</w:body></w:document>',
+            f"<w:document {_NS}><w:body>{_drawing('rId1', 2000, 2000)}</w:body></w:document>",
         )
     assert extract_docx_figure_images(str(path), _settings()) == []
