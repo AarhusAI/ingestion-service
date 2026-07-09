@@ -4,39 +4,28 @@ This document traces a document end-to-end through the ingestion service — fro
 Open WebUI's ingest call to the points written in Qdrant — **for the default
 configuration as actually deployed by the parent stack**.
 
-> **Why "as deployed" and not the standalone defaults?**
-> The service's own `app/config.py` / `.env.example` carry one set of fallbacks,
-> but the parent compose (`../docker-compose.yml`, the `ingestion:` service at
-> lines 646–770) **overrides several of them**. The diagrams below depict the
-> *effective* parent-stack values. If you run the service standalone, your
-> defaults differ — see the table.
-
----
-
 ## 1. Effective default configuration
 
-| Setting | Standalone (`app/config.py`) | **Effective (parent compose)** | Source |
-|---|---|---|---|
-| `EXTRACTION_ENGINE` | `kreuzberg` | **`auto`** | `../docker-compose.yml:681` |
-| ↳ `EXTRACTION_ROUTER_DEFAULT` | `kreuzberg` | **`kreuzberg`** | `:687` |
-| ↳ `EXTRACTION_ROUTER_DIAGRAM_ENGINE` | `hybrid-diagram` | **`hybrid-diagram`** | `:688` |
-| ↳ `EXTRACTION_ROUTER_DIAGRAM_PROFILE` | `diagram` | **`diagram-topology`** | `:689` |
-| `CHUNK_SPLIT_BY` | `token` | **`markdown`** | `:714` |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `400` / `80` | `400` / `80` | `:712–713` |
-| `CHUNK_MIN_SIZE` | `100` | `100` _(not set in compose → default)_ | `app/config.py` |
-| `TOKENIZER_MODEL` / `TOKENIZER_REVISION` | _(empty → `EMBEDDING_MODEL`)_ / _(empty)_ | `intfloat/multilingual-e5-large` pinned to `3d7cfbd` | `:715–716` |
-| `EMBEDDING_PROVIDER` | `openai-compat` | `openai-compat` @ `https://embed.itkdev.dk/v1` | `:721–722` |
-| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `intfloat/multilingual-e5-large` / `1024` | same | `:724–725` |
-| `EMBEDDING_PREFIX_DOC` | `passage: ` | `passage: ` | `:726` |
-| `ENABLE_SPARSE_EMBEDDINGS` | **`false`** | **`true`** | `:734` |
-| `SPARSE_EMBEDDING_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions` | same | `:736` |
-| `QDRANT_URI` / `QDRANT_INDEX` | `http://qdrant:6333` / `ingestion_files` | same | `:738–740` |
-| `S3_*` | MinIO | MinIO (`http://minio:9000`), allowlisted to bucket `openwebui` | `:742–748` |
+| Setting | Standalone default | **Effective (parent stack)** |
+|---|---|---|
+| `EXTRACTION_ENGINE` | `kreuzberg` | **`auto`** |
+| ↳ `EXTRACTION_ROUTER_DEFAULT` | `kreuzberg` | **`kreuzberg`** |
+| ↳ `EXTRACTION_ROUTER_DIAGRAM_ENGINE` | `hybrid-diagram` | **`hybrid-diagram`** |
+| ↳ `EXTRACTION_ROUTER_DIAGRAM_PROFILE` | `diagram` | **`diagram-topology`** |
+| `CHUNK_SPLIT_BY` | `token` | **`markdown`** |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `400` / `80` | `400` / `80` |
+| `CHUNK_MIN_SIZE` | `100` | `100` _(not set → default)_ |
+| `TOKENIZER_MODEL` / `TOKENIZER_REVISION` | _(empty → `EMBEDDING_MODEL`)_ / _(empty)_ | `intfloat/multilingual-e5-large`, pinned revision |
+| `EMBEDDING_PROVIDER` | `openai-compat` | `openai-compat` @ `https://embed.itkdev.dk/v1` |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `intfloat/multilingual-e5-large` / `1024` | same |
+| `EMBEDDING_PREFIX_DOC` | `passage: ` | `passage: ` |
+| `ENABLE_SPARSE_EMBEDDINGS` | **`false`** | **`true`** |
+| `SPARSE_EMBEDDING_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions` | same |
+| `QDRANT_URI` / `QDRANT_INDEX` | `http://qdrant:6333` / `ingestion_files` | same |
+| `S3_*` | MinIO | MinIO (`http://minio:9000`), allowlisted to bucket `openwebui` |
 
-**Net effect of the parent overrides:** the default pipeline runs **auto
-routing** (kreuzberg for normal docs, hybrid-diagram for drawing-heavy `.docx`),
-**markdown-aware chunking**, and **dense + sparse** embeddings — none of which
-are the standalone code defaults.
+The **Effective** column is what the parent stack's `docker-compose.yml` sets;
+where it sets nothing, the service's own defaults apply.
 
 Sidecars in play for the default flow:
 
@@ -66,7 +55,7 @@ flowchart LR
     QDR[("Qdrant<br/>index: ingestion_files")]
 
     OWUI -->|"PUT (Bearer, 300s)<br/>JSON: s3_bucket/s3_key"| ROUTE
-    ROUTE -->|"S3 GET (boto3)"| MINIO
+    ROUTE -->|"fetch file from S3"| MINIO
     ROUTE --> PIPE
     PIPE -->|"extract (default route)"| KRZ
     PIPE -.->|"extract (diagram route):<br/>office→PDF→PNG"| GOT
@@ -75,53 +64,44 @@ flowchart LR
     ROUTE -->|"IngestResponse / IngestError"| OWUI
 ```
 
-Open WebUI calls the service over the internal `app` network at
-`http://ingestion:8000` (`EXTERNAL_INGESTION_URL`, parent `:99`), authenticated
-with the shared `INGESTION_API_KEY`. The default integration uses **JSON mode**:
-Open WebUI has already stored the upload in MinIO, so it sends an S3 *reference*
-(`s3_bucket` / `s3_key`) rather than the file bytes.
-
----
-
 ## 3. Request lifecycle (entry layer)
 
-Defined in `app/routes/ingest.py`. A single handler authenticates, dispatches on
-`Content-Type`, lands the file on local disk, builds `meta`, then offloads the
-blocking pipeline run to a worker thread.
+A single handler authenticates, dispatches on `Content-Type`, lands the file on
+local disk, builds `meta`, then offloads the blocking pipeline run to a worker
+thread.
 
 ```mermaid
 flowchart TD
-    START["PUT /api/v1/ingest"] --> AUTH{"verify_api_key<br/>(app/auth.py:11)<br/>Bearer == API_KEY?"}
+    START["PUT /api/v1/ingest"] --> AUTH{"Bearer token<br/>matches API_KEY?"}
     AUTH -->|no| E401["401 Unauthorized"]
-    AUTH -->|yes| CT{"Content-Type?<br/>_ingest_impl (ingest.py:62)"}
+    AUTH -->|yes| CT{"Content-Type?"}
 
-    CT -->|application/json| J1["IngestRequestJSON.validate<br/>(file_id, filename,<br/>collection_name, user_id,<br/>s3_bucket, s3_key, overwrite)"]
-    J1 --> J2{"_check_bucket_allowed<br/>bucket in S3_ALLOWED_BUCKETS?"}
+    CT -->|application/json| J1["validate JSON body<br/>(file_id, filename,<br/>collection_name, user_id,<br/>s3_bucket, s3_key, overwrite)"]
+    J1 --> J2{"bucket on the<br/>S3 allowlist?"}
     J2 -->|no| E403["403 INVALID_REQUEST"]
-    J2 -->|yes| J3["await asyncio.to_thread(<br/>fetch_object_to_tempfile)<br/>HEAD size-check → download<br/>(app/services/s3.py)"]
-    J3 --> META["_meta_from_request →<br/>meta dict"]
+    J2 -->|yes| J3["fetch object from S3<br/>to a tempfile<br/>(size-checked, worker thread)"]
+    J3 --> META["build meta dict"]
 
-    CT -->|multipart/form-data| M1["stream_upload_to_tempfile<br/>1 MB chunks, MAX_UPLOAD_BYTES<br/>(ingest.py:169)"]
-    M1 --> M2["_read_multipart →<br/>meta dict (required fields)"]
+    CT -->|multipart/form-data| M1["stream upload to tempfile<br/>(1 MB chunks, size-capped)"]
+    M1 --> M2["read form fields → meta<br/>(required fields)"]
     M2 --> META
 
     CT -->|other| E415["415 Unsupported Media Type"]
 
-    META --> BIND{"_validate_collection_binding<br/>user-memory-/file- prefix<br/>matches user_id/file_id?"}
+    META --> BIND{"collection name matches<br/>user_id / file_id?<br/>(user-memory- / file- prefixes)"}
     BIND -->|no| E403b["403 INVALID_REQUEST"]
-    BIND -->|yes| RUN["await asyncio.to_thread(<br/>_run_pipeline_with_error_mapping,<br/>local_path, meta)"]
+    BIND -->|yes| RUN["run indexing pipeline<br/>(worker thread)"]
     RUN --> RESP["200 IngestResponse<br/>{status, collection_name,<br/>chunks_count, extraction}"]
-    RUN -->|exception| EMAP["_classify_pipeline_error →<br/>500 IngestError.code"]
+    RUN -->|exception| EMAP["map error →<br/>500 + IngestError code"]
 
-    RESP --> FIN["finally: os.unlink(local_path)"]
+    RESP --> FIN["tempfile always deleted"]
     EMAP --> FIN
 ```
 
-**Threading model.** Both the blocking S3 fetch (boto3) and the synchronous
-Haystack pipeline run are wrapped in `asyncio.to_thread(...)` so the event loop —
-and the `/health` / `/health/ready` probes — stay responsive during a long
-ingest. The tempfile is always removed in a `finally` block, on both success and
-failure.
+**Threading model.** Both the blocking S3 fetch and the synchronous Haystack
+pipeline run happen in worker threads, so the event loop — and the `/health` /
+`/health/ready` probes — stay responsive during a long ingest. The tempfile is
+always removed, on both success and failure.
 
 The `meta` dict that flows into the pipeline carries:
 `file_id`, `filename`, `collection_name`, `collection_type`, `user_id`,
@@ -132,21 +112,20 @@ The `meta` dict that flows into the pipeline carries:
 
 ## 4. Auto-routing detail (`EXTRACTION_ENGINE=auto`)
 
-The cached pipeline has one fixed `"converter"` slot, so the per-document engine
-decision lives *inside* a `RoutingConverter` (`app/pipelines/routing_converter.py`).
-It builds one inner converter per routable engine at startup, then classifies and
-delegates per source. Classification is `.docx`-only today; everything else takes
-the default route.
+The cached pipeline has one fixed converter slot, so the per-document engine
+decision lives *inside* a routing converter. It builds one inner converter per
+routable engine at startup, then classifies and delegates per source.
+Classification is `.docx`-only today; everything else takes the default route.
 
 ```mermaid
 flowchart TD
-    SRC["source file"] --> CLS["classify_engine(source)<br/>(app/pipelines/detectors.py:103)"]
+    SRC["source file"] --> CLS["classify the document"]
     CLS --> EXT{"suffix == .docx?"}
     EXT -->|no| DEF["signal = default"]
 
-    EXT -->|yes| TB{"textbox signal<br/>drawing_text_units ≥ MIN_TEXTBOXES (20)<br/>AND ratio ≥ DRAWING_RATIO (2.0)?"}
+    EXT -->|yes| TB{"textbox signal:<br/>≥ 20 shape/textbox text units<br/>AND ≥ 2× more text in shapes<br/>than in the body?"}
     TB -->|yes| DIAG["engine = hybrid-diagram<br/>signal = textbox<br/>profile = diagram-topology"]
-    TB -->|no| RAS{"raster signal<br/>body images ≥ MIN_BODY_IMAGES<br/>AND max image area ≥ MIN_IMAGE_EMU?"}
+    TB -->|no| RAS{"raster signal:<br/>enough large images<br/>in the document body?"}
     RAS -->|yes| DIAGR["engine = hybrid-diagram<br/>signal = raster<br/>profile = figure"]
     RAS -->|no| DEF
 
@@ -159,30 +138,30 @@ flowchart TD
     STAMP --> LOG["surfaced 3 ways:<br/>INFO log 'routing X -> engine=…'<br/>response.extraction<br/>meta on every chunk"]
 ```
 
-Detection reads only `word/document.xml` (+ `docProps/app.xml` for the body-word
-count), so it is zip-bomb safe and header/footer logos never trip the raster
-signal. The raster gate has a third, opt-in condition not shown above:
+Detection reads only the document body (plus the document properties for the
+body-word count), so it is zip-bomb safe and header/footer logos never trip the
+raster signal. The thresholds are all tunable via the `EXTRACTION_ROUTER_*`
+settings; the raster gate has a third, opt-in condition not shown above:
 `EXTRACTION_ROUTER_MIN_IMAGE_WORD_RATIO` (default `0` = off) additionally
-requires `max_image_area / body_words` to clear a floor, guarding against a
-lone large decorative photo in a prose-heavy doc. On any structural surprise
+requires the image-area-to-word-count ratio to clear a floor, guarding against
+a lone large decorative photo in a prose-heavy doc. On any structural surprise
 classification returns the **default** route — it never raises for routing
 reasons.
 
-> **Where the profile is really chosen.** `classify_engine()` emits only
-> *engine + signal + metrics* (`RoutingDecision` has no profile field). The
-> profile boxes above pair each signal with the profile it *yields*, but the
-> router itself passes only `EXTRACTION_ROUTER_DIAGRAM_PROFILE` to the converter.
-> `hybrid-diagram` ignores that on its main `.docx` path and re-inspects the file
-> with `docx_diagram_profile()` — `diagram-topology` when labels are native text,
-> `figure` when they're raster pixels (`app/pipelines/detectors.py:284`). The
-> passed value only bites for hybrid's empty-docx fallback or a `vision-llm`
-> diagram engine.
+> **Where the profile is really chosen.** The router itself only decides
+> *engine + signal* and passes along the configured
+> `EXTRACTION_ROUTER_DIAGRAM_PROFILE`. The profile boxes above pair each signal
+> with the profile it *yields* in practice, because `hybrid-diagram` ignores
+> the passed value on its main `.docx` path and re-inspects the file itself:
+> `diagram-topology` when the labels are native text, `figure` when they are
+> raster pixels. The configured value only bites for hybrid's empty-docx
+> fallback or when a plain `vision-llm` diagram engine is configured instead.
 
 **The diagram route (`hybrid-diagram`)** pairs the two engine families by their
-strengths (`app/pipelines/hybrid_diagram_converter.py`):
+strengths:
 
-- **Native docx text** (`app/pipelines/docx_text.py`) is the authoritative body —
-  every label pulled verbatim from the package XML.
+- **Native docx text** is the authoritative body — every label pulled verbatim
+  from the document package.
 - **The vision model supplies only the diagram.** Rendering goes office→PDF via
   the **Gotenberg** sidecar, then PDF→PNG locally, then a multimodal LLM
   reconstructs structure. Profile is `diagram-topology` (Mermaid graph, labels
@@ -194,20 +173,20 @@ strengths (`app/pipelines/hybrid_diagram_converter.py`):
 
 ## 5. Haystack indexing pipeline
 
-Built once at startup and cached (`app/pipelines/indexing.py:_build_pipeline`,
-line 209). Every component is wrapped in `metrics.instrument_stage(...)` to record
-`pipeline_stage_duration_seconds`. For the effective default (sparse **on**):
+Built once at startup and cached. Every stage is instrumented, so per-stage
+latency shows up in the `pipeline_stage_duration_seconds` metric. For the
+effective default (sparse **on**):
 
 ```mermaid
 flowchart LR
     IN["sources=[file_path]<br/>meta (per request)"] --> CONV
 
     subgraph PIPE["cached Haystack Pipeline"]
-        CONV["converter<br/>RoutingConverter<br/>(auto → kreuzberg / hybrid-diagram)"]
+        CONV["converter<br/>(auto-routing →<br/>kreuzberg / hybrid-diagram)"]
         SPLIT["splitter<br/>MarkdownChunker<br/>(CHUNK_SPLIT_BY=markdown)"]
-        DENSE["dense_embedder<br/>OpenAIDocumentEmbedder<br/>(e5-large @ embed.itkdev.dk)"]
-        SPARSE["sparse_embedder<br/>FastembedSparseDocumentEmbedder<br/>(BM42)"]
-        WRITE["writer<br/>DocumentWriter → QdrantDocumentStore"]
+        DENSE["dense embedder<br/>(e5-large @ embed.itkdev.dk)"]
+        SPARSE["sparse embedder<br/>(BM42, in-process)"]
+        WRITE["writer<br/>→ Qdrant"]
     end
 
     CONV -->|documents| SPLIT
@@ -217,14 +196,11 @@ flowchart LR
     WRITE --> OUT["documents_written (count)"]
 ```
 
-> When `ENABLE_SPARSE_EMBEDDINGS=false` (the standalone default), the
-> `sparse_embedder` component is absent and `dense_embedder.documents` connects
-> directly to `writer.documents`.
+> When `ENABLE_SPARSE_EMBEDDINGS=false` (the standalone default), the sparse
+> embedder is absent and the dense embedder feeds the writer directly.
 
-**Chunking — `MarkdownChunker` (`app/pipelines/splitter.py:95`).** Two stages
-plus a merge pass:
-1. Split on `#`/`##`/`###` headings (langchain `MarkdownHeaderTextSplitter`,
-   `strip_headers=False`).
+**Chunking — the markdown chunker.** Two stages plus a merge pass:
+1. Split on `#`/`##`/`###` headings (heading lines stay in the content).
 2. Merge pass: sections smaller than `CHUNK_MIN_SIZE` (100) tokens absorb the
    next section while they stay under the minimum and the combined size fits
    `CHUNK_SIZE`; a trailing tiny section folds backward into the previous
@@ -246,50 +222,50 @@ Each output chunk's `meta` inherits the request `meta` and gains:
 
 **Embedding.** The dense embedder is a network call to the OpenAI-compatible
 endpoint (`embed.itkdev.dk`), applying the `passage: ` document prefix. The sparse
-embedder runs the BM42 model in-process via fastembed/ONNX, thread-capped
-(`EMBEDDING_THREADS`, `parallel=1`) so it doesn't starve the event loop.
+embedder runs the BM42 model in-process, thread-capped (`EMBEDDING_THREADS`)
+so it doesn't starve the event loop.
 
-With `EMBED_HEADERS_BREADCRUMB=true` (default) all embedders pass
-`meta_fields_to_embed=["headers_breadcrumb"]`, so the text they encode is
+With `EMBED_HEADERS_BREADCRUMB=true` (default) both embedders prepend the
+breadcrumb to the text they encode, so the vector sees
 `passage: Setup > Docker > Networking\n<chunk content>` — the full section
 path steers the vector (and BM42's keyword weights) while the stored
 `content` stays clean; the retrieval agent hands stored content verbatim to
 the answering LLM, so the breadcrumb never leaks into answer context. Chunks
-without the field embed unchanged.
+without a breadcrumb embed unchanged.
 
 ---
 
 ## 6. Qdrant write, idempotency & teardown
 
-`run_indexing_pipeline(file_path, meta)` (`app/pipelines/indexing.py`) wraps
-the pipeline run with a per-`file_id` lock and a **versioned (blue/green)
-overwrite**: each run stamps a fresh `meta.ingest_version` onto its chunks
-(changing their content+meta-hashed Haystack document IDs), so the new version
-is written *alongside* the old points — the old version is only swept after
-the new one fully landed, and a failed run tears down only its own points.
+The ingestion run wraps the pipeline with a per-`file_id` lock and a
+**versioned (blue/green) overwrite**: each run stamps a fresh
+`meta.ingest_version` onto its chunks (which also changes their content-hashed
+document IDs), so the new version is written *alongside* the old points — the
+old version is only swept after the new one fully landed, and a failed run
+tears down only its own points.
 
 ```mermaid
 sequenceDiagram
-    participant R as run_indexing_pipeline
+    participant R as ingestion run
     participant L as per-file_id lock
     participant Q as Qdrant
     participant P as Haystack pipeline
 
     R->>L: acquire (serialize same file_id)
-    R->>R: _strip_control_fields(meta) drops overwrite,<br/>stamp meta.ingest_version = uuid4
-    R->>P: pipeline.run with sources and meta,<br/>include_outputs_from converter
+    R->>R: drop control fields from meta,<br/>stamp fresh meta.ingest_version
+    R->>P: run pipeline with sources and meta
     alt success
-        P-->>R: writer.documents_written
+        P-->>R: documents_written
         alt overwrite is true (default) AND chunks > 0
-            R->>Q: _delete_stale_versions(file_id, version)
-            Note over Q: delete file_id points where<br/>ingest_version != this run's<br/>(also sweeps pre-versioning points)
+            R->>Q: sweep older versions of this file
+            Note over Q: delete file_id points whose<br/>ingest_version differs from this run's<br/>(also sweeps pre-versioning points)
         end
         Note over R: chunks == 0 → sweep skipped:<br/>empty extraction never replaces<br/>a good index (warning + metric)
-        R->>R: _extraction_summary builds response.extraction
+        R->>R: build extraction summary for the response
     else exception
-        R->>Q: _delete_ingest_version(file_id, version) as teardown
-        Note over Q: remove ONLY this run's points —<br/>the previous version stays live.<br/>collection-not-found is swallowed
-        R->>R: re-raise, route maps to IngestError.code
+        R->>Q: tear down only this run's points
+        Note over Q: the previous version stays live.<br/>collection-not-found is swallowed
+        R->>R: re-raise, route maps to IngestError code
     end
     R->>L: release
 ```
@@ -299,25 +275,24 @@ window is the moment between write-complete and sweep, where a query can see
 both versions (duplicates, not absence). If the sweep itself fails it is
 swallowed with a WARNING; the next successful overwrite cleans up. Same for an
 orphaned teardown: any leftover partial version matches the next sweep's
-`ingest_version != current` filter.
+"different `ingest_version`" filter.
 
-**Vector store (`QdrantDocumentStore`, `indexing.py:180`).** Configured with
-`embedding_dim=1024`, `use_sparse_embeddings=true`, and multitenancy HNSW
-(`hnsw_config={"m": 0, "payload_m": 16}`). Each point carries **two named
+**Vector store.** The Qdrant collection is configured with
+`embedding_dim=1024`, sparse embeddings enabled, and multitenancy HNSW
+(no global graph, per-tenant subgraphs). Each point carries **two named
 vectors** — a dense vector (used by the per-tenant HNSW) and a sparse vector
 (Qdrant's inverted index).
 
-**Payload indexes (`app/services/qdrant_setup.py:ensure_payload_indexes`),
-created at startup:**
-- `meta.collection_name` — keyword index with `is_tenant=True`; the multitenancy
-  key that gives each collection its own HNSW subgraph.
+**Payload indexes, created at startup:**
+- `meta.collection_name` — keyword index marked as the tenant key; gives each
+  collection its own HNSW subgraph.
 - `meta.collection_type` — keyword index for admin queries.
 - `meta.languages` — keyword index on the list field (MatchAny-ready).
 - `meta.file_id` — keyword index; every point op (versioned sweep/teardown,
   `DELETE /api/v1/documents/{file_id}`, chunk-inspection count/scroll) filters
   on it.
 - `meta.ingest_version` — keyword index backing the blue/green overwrite's
-  must/must_not filters.
+  filters.
 
 ---
 
@@ -350,8 +325,7 @@ Each written point's payload:
 
 ## Appendix B — Error-code map
 
-The route layer maps pipeline exceptions to `IngestError.code`
-(`app/routes/ingest.py:_classify_pipeline_error`, `app/models.py`):
+The route layer maps pipeline exceptions to an `IngestError` code:
 
 | Failure | HTTP | `code` |
 |---|---|---|
@@ -368,6 +342,6 @@ The route layer maps pipeline exceptions to `IngestError.code`
 
 ---
 
-*Generated from a trace of the codebase. Diagrams reflect the effective default
-configuration set by the parent stack's `docker-compose.yml`; re-verify the
-config table against that file if the parent stack changes.*
+*Diagrams reflect the effective default configuration set by the parent
+stack's `docker-compose.yml`; re-verify the config table against that file if
+the parent stack changes.*
