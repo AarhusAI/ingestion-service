@@ -84,7 +84,7 @@ class Settings(BaseSettings):
         return self
 
     # ----- Server -----
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # nosec B104 - container-internal bind; Traefik fronts it on the frontend network
     port: int = 8000
     # Operator-triage switch (NOT a logging dial — see LOG_LEVEL_APP for that).
     # When true, ingest error responses reflect ``str(exc)`` instead of a fixed

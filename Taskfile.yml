@@ -112,7 +112,7 @@ tasks:
   audit:deps:
     desc: Scan installed dependencies for known CVEs (pip-audit)
     cmds:
-      - "{{.PYTHON}} pip-audit --strict ."
+      - "{{.PYTHON}} pip-audit --cache-dir /tmp/pip-audit-cache --strict ."
 
   audit:code:
     desc: Static security scan of app/ (bandit)
