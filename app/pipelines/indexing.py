@@ -52,6 +52,19 @@ _settings: Settings | None = None
 _raw_client: QdrantClient | None = None
 
 
+def _active_settings() -> Settings:
+    """The settings the cached pipeline was built from.
+
+    ``init_pipeline`` stores its (possibly injected) ``Settings`` as
+    ``_settings``; every raw-Qdrant helper below must read the collection /
+    URI from *that* object, not the module-level ``global_settings``, so the
+    document store and the raw point ops can never target different
+    collections. Falls back to ``global_settings`` only before init (the
+    callers all guard on pipeline readiness, so this is defensive).
+    """
+    return _settings if _settings is not None else global_settings
+
+
 def _raw_qdrant_client() -> QdrantClient:
     """Direct Qdrant client for raw point ops — count / scroll / delete by
     ``meta.file_id`` payload filter — that ``QdrantDocumentStore``'s public API
@@ -68,9 +81,10 @@ def _raw_qdrant_client() -> QdrantClient:
     """
     global _raw_client
     if _raw_client is None:
+        s = _active_settings()
         _raw_client = QdrantClient(
-            url=global_settings.qdrant_uri,
-            api_key=global_settings.qdrant_api_key,
+            url=s.qdrant_uri,
+            api_key=s.qdrant_api_key,
         )
     return _raw_client
 
@@ -368,7 +382,7 @@ def _delete_stale_versions(file_id: str, keep_version: str) -> None:
     """
     try:
         _raw_qdrant_client().delete(
-            collection_name=global_settings.qdrant_index,
+            collection_name=_active_settings().qdrant_index,
             points_selector=_stale_version_filter(file_id, keep_version),
         )
     except Exception:
@@ -388,7 +402,7 @@ def _delete_ingest_version(file_id: str, version: str) -> None:
     swept by the next successful overwrite's stale-version cleanup."""
     try:
         _raw_qdrant_client().delete(
-            collection_name=global_settings.qdrant_index,
+            collection_name=_active_settings().qdrant_index,
             points_selector=_version_filter(file_id, version),
         )
     except Exception:
@@ -430,7 +444,7 @@ def count_chunks_by_file_id(file_id: str) -> int:
     if _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")
     result = _raw_qdrant_client().count(
-        collection_name=global_settings.qdrant_index,
+        collection_name=_active_settings().qdrant_index,
         count_filter=_file_id_filter(file_id),
         exact=True,
     )
@@ -448,7 +462,7 @@ def scroll_chunks_by_file_id(file_id: str, limit: int, offset: str | None = None
     if _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")
     return _raw_qdrant_client().scroll(
-        collection_name=global_settings.qdrant_index,
+        collection_name=_active_settings().qdrant_index,
         scroll_filter=_file_id_filter(file_id),
         limit=limit,
         offset=offset,
@@ -484,7 +498,7 @@ def delete_by_file_id(file_id: str) -> int:
     with _per_file_id_lock(file_id):
         count = count_chunks_by_file_id(file_id)  # exact count *before* delete
         _raw_qdrant_client().delete(
-            collection_name=global_settings.qdrant_index,
+            collection_name=_active_settings().qdrant_index,
             points_selector=_file_id_filter(file_id),
         )
         return count
