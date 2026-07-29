@@ -57,8 +57,9 @@ flowchart LR
   C -->|Documents| S["Splitter<br/>CHUNK_SPLIT_BY"]
   S -->|Chunks + meta| DE["Dense embedder<br/>EMBEDDING_PROVIDER"]
   DE -.optional.-> SE["Sparse embedder<br/>ENABLE_SPARSE_EMBEDDINGS"]
-  DE --> W["Writer<br/>QdrantDocumentStore"]
-  SE --> W
+  DE --> G["Embedding guard<br/>dense vector required"]
+  SE --> G
+  G --> W["Writer<br/>QdrantDocumentStore"]
   W --> QD[("Qdrant")]
 
   classDef optional stroke-dasharray:5 5;
@@ -558,6 +559,18 @@ because they are **contracts with other services**:
   `word`, `sentence`, and `passage` delegate to Haystack's built-in
   `DocumentSplitter` and count in those units instead. Token and markdown
   modes use `TOKENIZER_MODEL` if set, otherwise fall back to `EMBEDDING_MODEL`.
+- `EMBEDDING_MAX_TOKENS` (default `512`) is the served model's hard input limit
+  and the ceiling both HF-aware chunking modes size against. `CHUNK_SIZE` counts
+  chunk *content* only, but the embedder sends `EMBEDDING_PREFIX_DOC` + the
+  heading breadcrumb + the content, and the tokenizer adds special tokens — so
+  the effective content budget is `min(CHUNK_SIZE, EMBEDDING_MAX_TOKENS − prefix
+  − breadcrumb − specials − margin)`, recomputed per section in `markdown` mode
+  because the breadcrumb's cost varies (measured 1–53 tokens on real documents).
+  A `CHUNK_SIZE` that already fits is left untouched, so the default `400`
+  produces exactly the chunks it always did; a too-large value is clamped with an
+  INFO log naming both numbers rather than failing startup. Getting this wrong is
+  not a soft failure: the endpoint rejects the **entire batch** (32 chunks) when
+  one input is oversized.
 
 ## Supported Embedding Models
 

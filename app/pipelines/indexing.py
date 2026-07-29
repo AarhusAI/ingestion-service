@@ -35,7 +35,11 @@ from app.config import Settings
 from app.config import settings as global_settings
 from app.log_utils import sanitize_for_log
 from app.pipelines.converters import build_converter
-from app.pipelines.embedders import build_dense_embedder, build_sparse_embedder
+from app.pipelines.embedders import (
+    DenseEmbeddingGuard,
+    build_dense_embedder,
+    build_sparse_embedder,
+)
 from app.pipelines.splitter import build_splitter
 
 log = logging.getLogger(__name__)
@@ -238,23 +242,28 @@ def _build_pipeline(s: Settings, document_store: QdrantDocumentStore) -> Pipelin
     pipeline.connect("converter.documents", "splitter.documents")
     pipeline.connect("splitter.documents", "dense_embedder.documents")
 
+    # Last hop before the writer in both branches: Qdrant accepts a point that
+    # carries only its sparse vector, so a dropped dense embedding would be
+    # stored as a permanently unsearchable chunk under a "successful" ingest.
+    pipeline.add_component(
+        "embedding_guard", metrics.instrument_stage(DenseEmbeddingGuard(), "embedding_guard")
+    )
+    pipeline.add_component(
+        "writer",
+        metrics.instrument_stage(DocumentWriter(document_store=document_store), "writer"),
+    )
+
     sparse = build_sparse_embedder(s)
     if sparse is not None:
         pipeline.add_component(
             "sparse_embedder", metrics.instrument_stage(sparse, "sparse_embedder")
         )
-        pipeline.add_component(
-            "writer",
-            metrics.instrument_stage(DocumentWriter(document_store=document_store), "writer"),
-        )
         pipeline.connect("dense_embedder.documents", "sparse_embedder.documents")
-        pipeline.connect("sparse_embedder.documents", "writer.documents")
+        pipeline.connect("sparse_embedder.documents", "embedding_guard.documents")
     else:
-        pipeline.add_component(
-            "writer",
-            metrics.instrument_stage(DocumentWriter(document_store=document_store), "writer"),
-        )
-        pipeline.connect("dense_embedder.documents", "writer.documents")
+        pipeline.connect("dense_embedder.documents", "embedding_guard.documents")
+
+    pipeline.connect("embedding_guard.documents", "writer.documents")
 
     return pipeline
 

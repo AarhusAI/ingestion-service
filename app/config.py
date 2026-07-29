@@ -346,6 +346,15 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = "intfloat/multilingual-e5-large"
     embedding_dim: int = 1024
+    # Hard input limit of the *served* embedding model, in tokens (e5-large: 512).
+    # A contract with the endpoint, not a preference: one token over and the
+    # server rejects the entire request *batch* with HTTP 400, so a single
+    # oversized chunk costs every other chunk batched with it. Token/markdown
+    # chunking treats this as a ceiling and shrinks chunks so everything the
+    # embedder actually sends fits — EMBEDDING_PREFIX_DOC, the heading
+    # breadcrumb, and the tokenizer's special tokens, none of which CHUNK_SIZE
+    # counts. Raise it only if the endpoint really serves a longer context.
+    embedding_max_tokens: int = 512
     # Required by the model card. e5: "passage: " on docs, "query: " on queries; bge-m3 takes none.
     embedding_prefix_doc: str = "passage: "
     # Not used at indexing time; kept here so the contract is documented in one

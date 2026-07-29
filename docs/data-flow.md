@@ -198,18 +198,21 @@ flowchart LR
         SPLIT["splitter<br/>MarkdownChunker<br/>(CHUNK_SPLIT_BY=markdown)"]
         DENSE["dense embedder<br/>(e5-large @ embed.itkdev.dk)"]
         SPARSE["sparse embedder<br/>(BM42, in-process)"]
+        GUARD["embedding_guard<br/>(no dense vector → fail)"]
         WRITE["writer<br/>→ Qdrant"]
     end
 
     CONV -->|documents| SPLIT
     SPLIT -->|documents| DENSE
     DENSE -->|documents| SPARSE
-    SPARSE -->|documents| WRITE
+    SPARSE -->|documents| GUARD
+    GUARD -->|documents| WRITE
     WRITE --> OUT["documents_written (count)"]
 ```
 
 > When `ENABLE_SPARSE_EMBEDDINGS=false` (the standalone default), the sparse
-> embedder is absent and the dense embedder feeds the writer directly.
+> embedder is absent and the dense embedder feeds the guard directly. The guard
+> is the last hop before the writer in both configurations.
 
 **Chunking — the markdown chunker.** Two stages plus a merge pass:
 1. Split on `#`/`##`/`###` headings (heading lines stay in the content).
@@ -221,8 +224,15 @@ flowchart LR
    the longest common prefix of their sections' heading paths as
    `headers` / `headers_breadcrumb` (empty prefix → no breadcrumb; each
    section's own heading line survives in the content). `0` disables.
-3. Token-pack only the sections that exceed `CHUNK_SIZE` (400) using the
-   e5-large tokenizer, with `CHUNK_OVERLAP` (80).
+3. Token-pack only the sections that exceed the section's **effective content
+   budget** using the e5-large tokenizer, with `CHUNK_OVERLAP` (80). The budget
+   is `min(CHUNK_SIZE, EMBEDDING_MAX_TOKENS − prefix − breadcrumb − specials −
+   margin)`, recomputed per section: the `passage: ` prefix, this section's
+   `headers_breadcrumb`, and the tokenizer's `<s>`/`</s>` all ride along at
+   embed time but are invisible to `CHUNK_SIZE`. Two sections of identical
+   length can therefore split differently — the one under a deep heading path
+   has less room for content. A `CHUNK_SIZE` that already fits (400 under a
+   512-token model) is used as-is.
 
 Each output chunk's `meta` inherits the request `meta` and gains:
 - `headers` — outermost-first breadcrumb of the section heading hierarchy
@@ -236,6 +246,14 @@ Each output chunk's `meta` inherits the request `meta` and gains:
 endpoint (`embed.itkdev.dk`), applying the `passage: ` document prefix. The sparse
 embedder runs the BM42 model in-process, thread-capped (`EMBEDDING_THREADS`)
 so it doesn't starve the event loop.
+
+Requests go out in batches of 32, and the endpoint rejects an entire batch if
+any single input exceeds `EMBEDDING_MAX_TOKENS` — which is why the chunk budget
+above accounts for the prefix and breadcrumb, and why `raise_on_failure=True`
+is set on the dense embedder. A `DenseEmbeddingGuard` sits between the last
+embedder and the writer as a final check: Qdrant accepts a point carrying only
+its sparse vector, so a dropped dense embedding would otherwise be stored as a
+chunk that no vector search can ever return.
 
 With `EMBED_HEADERS_BREADCRUMB=true` (default) both embedders prepend the
 breadcrumb to the text they encode, so the vector sees

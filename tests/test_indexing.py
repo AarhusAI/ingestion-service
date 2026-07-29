@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+from haystack import Document, component
+
 from app.pipelines import indexing
 
 
@@ -472,3 +475,102 @@ def test_init_pipeline_warm_up_error_propagates(monkeypatch):
         assert "HuggingFace" in str(exc)
     else:
         raise AssertionError("expected RuntimeError to propagate")
+
+
+# -------------------- Pipeline wiring: the dense-vector invariant --------------------
+
+
+@component
+class _Passthrough:
+    """Minimal Haystack component with documents in → documents out.
+
+    Module-level (not nested in a helper) because Haystack resolves ``run``'s
+    annotations with ``typing.get_type_hints``, which cannot see names from a
+    function's local scope under ``from __future__ import annotations``.
+    """
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        return {"documents": documents}
+
+
+def _passthrough_component():
+    return _Passthrough()
+
+
+@pytest.mark.parametrize("sparse_enabled", [True, False])
+def test_build_pipeline_guards_writer_in_both_branches(monkeypatch, sparse_enabled):
+    """The guard must be the last hop before the writer whether or not sparse
+    embeddings are on — a chunk with no dense vector must never reach Qdrant."""
+    from unittest.mock import MagicMock
+
+    from app.pipelines import indexing
+
+    monkeypatch.setattr(
+        indexing, "_build_converter_for_pipeline", lambda _s: _passthrough_component()
+    )
+    monkeypatch.setattr(indexing, "build_splitter", lambda _s: _passthrough_component())
+    monkeypatch.setattr(indexing, "build_dense_embedder", lambda _s: _passthrough_component())
+    monkeypatch.setattr(
+        indexing,
+        "build_sparse_embedder",
+        lambda _s: _passthrough_component() if sparse_enabled else None,
+    )
+
+    s = indexing.global_settings
+    pipeline = indexing._build_pipeline(s, MagicMock())
+    edges = {(a, b) for a, b, *_ in pipeline.graph.edges}
+
+    assert ("embedding_guard", "writer") in edges
+    # Nothing bypasses the guard on its way to the writer.
+    assert [src for src, dst in edges if dst == "writer"] == ["embedding_guard"]
+    if sparse_enabled:
+        assert ("sparse_embedder", "embedding_guard") in edges
+    else:
+        assert ("dense_embedder", "embedding_guard") in edges
+
+
+def test_dropped_dense_embedding_surfaces_as_embedding_failed():
+    """End-to-end over the three layers: the guard raises inside a real Haystack
+    pipeline, Haystack wraps it in ``PipelineRuntimeError``, and the route layer
+    still classifies it as ``EMBEDDING_FAILED`` (not ``PIPELINE_FAILED``).
+
+    Ties together the failure that silently wrote 28k vectorless points: a
+    rejected embedding batch leaves documents with ``embedding=None``, and
+    nothing downstream objected.
+    """
+    from haystack import Pipeline
+
+    from app.pipelines.embedders import DenseEmbeddingGuard
+    from app.routes.ingest import _classify_pipeline_error
+
+    @component
+    class _Source:
+        @component.output_types(documents=list[Document])
+        def run(self) -> dict:
+            return {
+                "documents": [
+                    Document(content="ok", embedding=[0.1], meta={"split_id": 0}),
+                    Document(content="dropped", meta={"split_id": 1}),
+                ]
+            }
+
+    @component
+    class _ExplodingWriter:
+        @component.output_types(documents_written=int)
+        def run(self, documents: list[Document]) -> dict:
+            raise AssertionError("writer must never see a vectorless document")
+
+    pipeline = Pipeline()
+    pipeline.add_component("src", _Source())
+    pipeline.add_component("embedding_guard", DenseEmbeddingGuard())
+    pipeline.add_component("writer", _ExplodingWriter())
+    pipeline.connect("src.documents", "embedding_guard.documents")
+    pipeline.connect("embedding_guard.documents", "writer.documents")
+
+    from haystack.core.errors import PipelineRuntimeError
+
+    with pytest.raises(PipelineRuntimeError) as excinfo:
+        pipeline.run({})
+
+    assert _classify_pipeline_error(excinfo.value) == "EMBEDDING_FAILED"

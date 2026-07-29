@@ -430,6 +430,14 @@ def _classify_pipeline_error(exc: Exception) -> str:
     to ``PIPELINE_FAILED``, mis-labeling the two most common real-world
     failure modes (PDF parse errors, embedding-endpoint outages). See
     sec.md Finding 5.
+
+    Layers 1 and 2 only work because of the unwrapping below. Haystack's
+    ``Pipeline._run_component`` catches every component exception and re-raises
+    it as ``PipelineRuntimeError`` (``raise ... from error``), so what arrives
+    here is the wrapper, never the ``ExtractionError`` / ``APIError`` the
+    ``isinstance`` checks look for. Before unwrapping, correct codes came out
+    only by accident of layer 3 matching component *names* ("converter",
+    "dense_embedder") in the wrapper's message.
     """
     from app.pipelines.errors import (
         EmbeddingError,
@@ -437,6 +445,8 @@ def _classify_pipeline_error(exc: Exception) -> str:
         QdrantWriteError,
         SparseEmbeddingError,
     )
+
+    exc = _unwrap_pipeline_error(exc)
 
     # 1. Typed errors from components we control.
     if isinstance(exc, ExtractionError):
@@ -469,6 +479,29 @@ def _classify_pipeline_error(exc: Exception) -> str:
     if "tika" in msg or "extract" in msg or "converter" in msg:
         return "EXTRACTION_FAILED"
     return "PIPELINE_FAILED"
+
+
+def _unwrap_pipeline_error(exc: Exception) -> Exception:
+    """Peel Haystack's ``PipelineRuntimeError`` off a component failure.
+
+    Returns the original exception the component raised so the typed
+    ``isinstance`` dispatch can see it. Walks the whole ``__cause__`` chain —
+    Agent-style components can nest wrappers — guarding against a cycle, and
+    falls back to whatever it has if a wrapper carries no cause (then layer 3's
+    substring matching still applies to the wrapper message).
+    """
+    try:
+        from haystack.core.errors import PipelineRuntimeError
+    except ImportError:  # pragma: no cover - haystack is a hard dependency
+        return exc
+
+    seen: set[int] = set()
+    while isinstance(exc, PipelineRuntimeError) and exc.__cause__ is not None:
+        seen.add(id(exc))
+        if id(exc.__cause__) in seen:
+            break
+        exc = exc.__cause__
+    return exc
 
 
 def _is_pypdf_error(exc: Exception) -> bool:

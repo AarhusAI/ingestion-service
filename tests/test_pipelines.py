@@ -20,6 +20,24 @@ def _settings(**overrides) -> Settings:
     return Settings(**base)
 
 
+class _FakeTokenizer:
+    """Stand-in for a HuggingFace tokenizer: one token per whitespace word.
+
+    Makes every budget assertion below computable by hand. ``add_special_tokens``
+    is accepted and ignored because the splitters always pass ``False`` and
+    account for specials separately via ``num_special_tokens_to_add``.
+    """
+
+    def encode(self, text, add_special_tokens=False):
+        return text.split()
+
+    def tokenize(self, text):
+        return text.split()
+
+    def num_special_tokens_to_add(self):
+        return 2  # <s> ... </s>, as on XLM-R / e5
+
+
 # -------------------- Converters --------------------
 
 
@@ -199,7 +217,7 @@ def test_huggingface_tokenizer_splitter_run(monkeypatch):
 
     from app.pipelines import splitter as splitter_mod
 
-    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": object())
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": _FakeTokenizer())
 
     class _FakeSplitter:
         @classmethod
@@ -238,7 +256,7 @@ def test_build_splitter_token_uses_hf_component(monkeypatch):
     # langchain splitter, so mock both layers.
     from app.pipelines import splitter as splitter_mod
 
-    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": object())
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": _FakeTokenizer())
 
     class _FakeSplitter:
         @classmethod
@@ -276,10 +294,6 @@ def _patch_markdown_chunker(monkeypatch, *, header_sections, token_pieces=None):
     test inputs.
     """
     from app.pipelines import splitter as splitter_mod
-
-    class _FakeTokenizer:
-        def encode(self, text, add_special_tokens=False):
-            return text.split()
 
     monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": _FakeTokenizer())
 
@@ -659,3 +673,242 @@ def test_markdown_chunker_merged_disjoint_headers_drop_breadcrumb(monkeypatch):
     assert len(out) == 1
     assert out[0].meta["headers"] == []
     assert "headers_breadcrumb" not in out[0].meta
+
+
+# -------------------- Embed-budget accounting --------------------
+#
+# Regression tests for the failure that motivated this budget: CHUNK_SIZE was
+# enforced against chunk *content*, while the embedder additionally sends
+# EMBEDDING_PREFIX_DOC + the heading breadcrumb and the tokenizer adds special
+# tokens. 500-token chunks became 513-token requests, and the endpoint rejects
+# the whole batch of 32 with HTTP 400.
+#
+# With _FakeTokenizer (1 token per word): specials=2, prefix "passage: "=1
+# token, so the fixed overhead is 3 and _SAFETY_MARGIN adds 2.
+
+
+def _recording_recursive_splitter(monkeypatch, pieces=None):
+    """Fake stage-2 splitter that records the kwargs it was built with."""
+    calls = []
+
+    class _FakeSplitter:
+        @classmethod
+        def from_huggingface_tokenizer(cls, *_args, **kwargs):
+            calls.append(kwargs)
+            return cls()
+
+        def split_text(self, text):
+            return list(pieces) if pieces is not None else [text]
+
+    monkeypatch.setattr(
+        "langchain_text_splitters.RecursiveCharacterTextSplitter",
+        _FakeSplitter,
+    )
+    return calls
+
+
+def test_token_mode_clamps_chunk_size_to_model_limit(monkeypatch):
+    """CHUNK_SIZE larger than the model's limit is clamped by the overhead."""
+    from app.pipelines import splitter as splitter_mod
+
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": _FakeTokenizer())
+    calls = _recording_recursive_splitter(monkeypatch)
+
+    splitter_mod.HuggingFaceTokenizerSplitter(
+        tokenizer_model="x",
+        chunk_size=1000,
+        chunk_overlap=100,
+        embedding_prefix="passage: ",
+        max_tokens=512,
+    )
+
+    # 512 - (2 specials + 1 prefix) - 2 margin = 507
+    assert calls[0]["chunk_size"] == 507
+
+
+def test_token_mode_leaves_fitting_chunk_size_alone(monkeypatch):
+    """A CHUNK_SIZE that already fits is passed through untouched, so the
+    documented default (400) keeps producing exactly the chunks it did."""
+    from app.pipelines import splitter as splitter_mod
+
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": _FakeTokenizer())
+    calls = _recording_recursive_splitter(monkeypatch)
+
+    splitter_mod.HuggingFaceTokenizerSplitter(
+        tokenizer_model="x",
+        chunk_size=400,
+        chunk_overlap=80,
+        embedding_prefix="passage: ",
+        max_tokens=512,
+    )
+
+    assert calls[0]["chunk_size"] == 400
+    assert calls[0]["chunk_overlap"] == 80
+
+
+def test_markdown_breadcrumb_cost_forces_token_split(monkeypatch):
+    """**The production bug.** Two sections of identical length, one with a
+    breadcrumb and one without: the breadcrumb's tokens ride along at embed
+    time, so only that section exceeds the model limit and must be re-split.
+
+    Budget maths mirrors production (CHUNK_SIZE=500, EMBEDDING_MAX_TOKENS=512):
+    overhead=3, margin=2 → 507 of room, so CHUNK_SIZE=500 binds when there is no
+    breadcrumb. A 10-token breadcrumb drops the room to 497. Both sections are
+    exactly 500 tokens, so only the one carrying the breadcrumb overflows.
+    """
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    section = " ".join(f"w{i}" for i in range(500))
+    breadcrumb = " ".join(f"H{i}" for i in range(10))  # 10 tokens
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[
+            _section(section, metadata={"h2": breadcrumb}),
+            _section(section, metadata={}),
+        ],
+        token_pieces=["first half", "second half"],
+    )
+
+    ch = MarkdownChunker(
+        tokenizer_model="x",
+        chunk_size=500,
+        chunk_overlap=0,
+        embedding_prefix="passage: ",
+        max_tokens=512,
+        embed_breadcrumb=True,
+    )
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    # Section 1 (breadcrumb) was token-packed into two pieces; section 2
+    # (no breadcrumb) still fits and passes through whole.
+    assert [d.content for d in out] == ["first half", "second half", section]
+    assert [d.meta["headers"] for d in out] == [[breadcrumb], [breadcrumb], []]
+    assert ch._content_budget(breadcrumb) == 497
+    assert ch._content_budget("") == 500
+
+
+def test_markdown_breadcrumb_free_when_not_embedded(monkeypatch):
+    """With EMBED_HEADERS_BREADCRUMB=false the breadcrumb is never sent, so it
+    must not be charged against the budget."""
+    from haystack import Document
+
+    from app.pipelines.splitter import MarkdownChunker
+
+    section = " ".join(f"w{i}" for i in range(500))
+    breadcrumb = " ".join(f"H{i}" for i in range(10))
+    _patch_markdown_chunker(
+        monkeypatch,
+        header_sections=[_section(section, metadata={"h2": breadcrumb})],
+        token_pieces=None,  # asserts stage 2 is NOT reached
+    )
+
+    ch = MarkdownChunker(
+        tokenizer_model="x",
+        chunk_size=500,
+        chunk_overlap=0,
+        embedding_prefix="passage: ",
+        max_tokens=512,
+        embed_breadcrumb=False,
+    )
+    out = ch.run(documents=[Document(content="(stubbed)")])["documents"]
+
+    assert [d.content for d in out] == [section]
+
+
+def test_markdown_budget_never_collapses_below_floor(monkeypatch):
+    """A pathological heading path can't drive the budget to zero (or negative,
+    which langchain rejects outright)."""
+    from app.pipelines import splitter as splitter_mod
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(monkeypatch, header_sections=[])
+
+    ch = MarkdownChunker(
+        tokenizer_model="x",
+        chunk_size=500,
+        chunk_overlap=100,
+        embedding_prefix="passage: ",
+        max_tokens=512,
+        embed_breadcrumb=True,
+    )
+    huge = " ".join(f"h{i}" for i in range(600))
+    assert ch._content_budget(huge) == splitter_mod._MIN_BUDGET
+    # And the overlap handed to langchain stays legal for that budget.
+    assert ch._splitter_for(splitter_mod._MIN_BUDGET) is not None
+
+
+def test_markdown_budget_disabled_without_max_tokens(monkeypatch):
+    """max_tokens=0 (feature off) leaves the old content-only behaviour."""
+    from app.pipelines.splitter import MarkdownChunker
+
+    _patch_markdown_chunker(monkeypatch, header_sections=[])
+    ch = MarkdownChunker(tokenizer_model="x", chunk_size=100, chunk_overlap=10)
+    assert ch._content_budget("a very long breadcrumb indeed") == 100
+
+
+def test_build_splitter_passes_embed_budget(monkeypatch):
+    """build_splitter wires EMBEDDING_MAX_TOKENS / prefix / breadcrumb flag
+    through, so the ceiling isn't silently inert in the real pipeline."""
+    _patch_markdown_chunker(monkeypatch, header_sections=[])
+    s = _settings(chunk_split_by="markdown", chunk_size=500, embedding_max_tokens=512)
+    ch = build_splitter(s)
+
+    assert ch._max_tokens == 512
+    assert ch._embed_breadcrumb is True
+    assert ch._fixed_overhead == 3  # 2 specials + 1-token "passage: "
+    # 512 - 3 - 2 = 507 of room, so CHUNK_SIZE=500 is the tighter bound — a
+    # short breadcrumb costs nothing, and only a long one starts to bite.
+    assert ch._content_budget("") == 500
+    assert ch._content_budget("Setup > Docker") == 500
+    assert ch._content_budget(" ".join(f"H{i}" for i in range(20))) == 487  # 507 - 20
+
+
+# -------------------- Dense-embedding invariant --------------------
+
+
+def test_dense_embedder_raises_on_failure():
+    """A rejected batch must abort the run, not return unembedded documents."""
+    e = build_dense_embedder(_settings(embedding_provider="openai-compat"))
+    assert e.raise_on_failure is True
+
+
+def test_embedding_guard_passes_embedded_documents():
+    from haystack import Document
+
+    from app.pipelines.embedders import DenseEmbeddingGuard
+
+    docs = [Document(content="a", embedding=[0.1, 0.2]), Document(content="b", embedding=[0.3])]
+    out = DenseEmbeddingGuard().run(documents=docs)["documents"]
+    assert out == docs
+
+
+def test_embedding_guard_rejects_missing_dense_vector():
+    """Qdrant would store this point with only its sparse vector — invisible to
+    vector search — under a 'successful' ingest. Fail instead."""
+    from haystack import Document
+
+    from app.pipelines.embedders import DenseEmbeddingGuard
+    from app.pipelines.errors import EmbeddingError
+
+    docs = [
+        Document(content="ok", embedding=[0.1], meta={"split_id": 0}),
+        Document(content="dropped", meta={"split_id": 1}),
+    ]
+    with pytest.raises(EmbeddingError, match="no dense embedding"):
+        DenseEmbeddingGuard().run(documents=docs)
+
+
+def test_embedding_guard_message_omits_chunk_text():
+    """The message reaches logs and (with DEBUG) the API response."""
+    from haystack import Document
+
+    from app.pipelines.embedders import DenseEmbeddingGuard
+    from app.pipelines.errors import EmbeddingError
+
+    secret = "patient name and address"
+    with pytest.raises(EmbeddingError) as excinfo:
+        DenseEmbeddingGuard().run(documents=[Document(content=secret, meta={"split_id": 7})])
+    assert secret not in str(excinfo.value)
+    assert "7" in str(excinfo.value)

@@ -79,8 +79,14 @@ services:
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:?EMBEDDING_API_KEY must be set in .env or .env.local}"
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-large}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      # Hard input limit of the served model. Chunking shrinks chunks to fit it
+      # *including* the prefix, breadcrumb, and special tokens the embedder adds
+      # — none of which CHUNK_SIZE counts. One token over and the endpoint
+      # rejects the whole batch with HTTP 400.
+      EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS:-512}
       EMBEDDING_PREFIX_DOC: "${EMBEDDING_PREFIX_DOC:-passage: }"
       EMBEDDING_PREFIX_QUERY: "${EMBEDDING_PREFIX_QUERY:-query: }"
+      EMBED_HEADERS_BREADCRUMB: ${EMBED_HEADERS_BREADCRUMB:-true}
       # Sparse embedder
       ENABLE_SPARSE_EMBEDDINGS: ${ENABLE_SPARSE_EMBEDDINGS:-false}
       SPARSE_EMBEDDING_PROVIDER: ${SPARSE_EMBEDDING_PROVIDER:-fastembed}

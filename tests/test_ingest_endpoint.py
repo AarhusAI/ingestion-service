@@ -767,3 +767,65 @@ def test_classify_pipeline_error_substring_fallback(exc, expected):
     from app.routes.ingest import _classify_pipeline_error
 
     assert _classify_pipeline_error(exc) == expected
+
+
+def _wrap_in_pipeline_error(exc: Exception, component: str = "dense_embedder") -> Exception:
+    """Reproduce how Haystack surfaces a component failure to the route layer.
+
+    The ``raise ... from err`` matters: ``from_exception`` alone does not set
+    ``__cause__``, and Pipeline._run_component's ``from error`` clause is what
+    the unwrapping in ``_classify_pipeline_error`` follows.
+    """
+    from haystack.core.errors import PipelineRuntimeError
+
+    try:
+        try:
+            raise exc
+        except Exception as err:
+            raise PipelineRuntimeError.from_exception(component, type(object()), err) from err
+    except PipelineRuntimeError as wrapped:
+        return wrapped
+
+
+@pytest.mark.parametrize(
+    "error_name, expected",
+    [
+        ("ExtractionError", "EXTRACTION_FAILED"),
+        ("EmbeddingError", "EMBEDDING_FAILED"),
+        ("SparseEmbeddingError", "SPARSE_EMBEDDING_FAILED"),
+        ("QdrantWriteError", "QDRANT_WRITE_FAILED"),
+    ],
+)
+def test_classify_unwraps_haystack_pipeline_error(error_name, expected):
+    """Haystack wraps every component exception in ``PipelineRuntimeError``, so
+    the typed dispatch only works if the cause is unwrapped first.
+
+    Without unwrapping these all fell through to ``PIPELINE_FAILED`` unless the
+    component *name* happened to contain a matching substring — which is how the
+    guard's EmbeddingError would have been mislabelled.
+    """
+    from app.pipelines import errors as error_mod
+    from app.routes.ingest import _classify_pipeline_error
+
+    exc = getattr(error_mod, error_name)("no substring hints in this text")
+    assert _classify_pipeline_error(_wrap_in_pipeline_error(exc, "stage")) == expected
+
+
+def test_classify_unwraps_openai_error_from_pipeline():
+    """A 400 from the embedding endpoint (raise_on_failure=True) arrives wrapped."""
+    openai = pytest.importorskip("openai")
+    from app.routes.ingest import _classify_pipeline_error
+
+    wrapped = _wrap_in_pipeline_error(openai.OpenAIError("400 too many input tokens"), "stage")
+    assert _classify_pipeline_error(wrapped) == "EMBEDDING_FAILED"
+
+
+def test_classify_falls_back_to_substring_for_causeless_wrapper():
+    """A wrapper with no cause still gets the layer-3 treatment."""
+    from haystack.core.errors import PipelineRuntimeError
+
+    from app.routes.ingest import _classify_pipeline_error
+
+    bare = PipelineRuntimeError("stage", dict, "embed endpoint exploded")
+    assert bare.__cause__ is None
+    assert _classify_pipeline_error(bare) == "EMBEDDING_FAILED"
