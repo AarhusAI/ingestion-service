@@ -54,7 +54,7 @@ flowchart LR
     EMB["embed.itkdev.dk<br/>(e5-large dense)"]
     QDR[("Qdrant<br/>index: ingestion_files")]
 
-    OWUI -->|"PUT (Bearer, 300s)<br/>JSON: s3_bucket/s3_key"| ROUTE
+    OWUI -->|"PUT (Bearer, 900s)<br/>JSON: s3_bucket/s3_key"| ROUTE
     ROUTE -->|"fetch file from S3"| MINIO
     ROUTE --> PIPE
     PIPE -->|"extract (default route)"| KRZ
@@ -63,6 +63,18 @@ flowchart LR
     PIPE -->|"write points"| QDR
     ROUTE -->|"IngestResponse / IngestError"| OWUI
 ```
+
+**Caller-budget contract.** The ingest PUT is fully synchronous — Open WebUI
+blocks on it with a single `requests.put(timeout=EXTERNAL_INGESTION_TIMEOUT)`
+(default **900s**, no retry) and marks the file `failed` if it expires. That
+budget must exceed the sum of the service's slowest component read timeouts on the
+vision/hybrid-diagram route — `GOTENBERG_READ_TIMEOUT` (120s) +
+N×`VISION_LLM_READ_TIMEOUT` (180s per call) + embedding + Qdrant write — otherwise
+the client gives up while the worker thread keeps running and, via the blue/green
+overwrite, still commits a good version: the UI shows `failed` but Qdrant is
+indexed. Raising the budget to 900s clears the realistic single-doc worst case; a
+pathological multi-call document can still exceed it (the residual accepted for
+this sync model — async ingest is the durable fix, tracked in `FINDINGS.md` #1).
 
 ## 3. Request lifecycle (entry layer)
 
