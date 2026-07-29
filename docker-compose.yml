@@ -68,8 +68,8 @@ services:
       GOTENBERG_READ_TIMEOUT: ${GOTENBERG_READ_TIMEOUT:-120.0}
       GOTENBERG_TLS_VERIFY: ${GOTENBERG_TLS_VERIFY:-true}
       # Chunking
-      CHUNK_SIZE: ${CHUNK_SIZE:-400}
-      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-80}
+      CHUNK_SIZE: ${CHUNK_SIZE:-500}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-100}
       CHUNK_SPLIT_BY: ${CHUNK_SPLIT_BY:-token}
       TOKENIZER_MODEL: ${TOKENIZER_MODEL:-}
       TOKENIZER_REVISION: ${TOKENIZER_REVISION:-}
@@ -79,8 +79,14 @@ services:
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:?EMBEDDING_API_KEY must be set in .env or .env.local}"
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-large}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      # Hard input limit of the served model. Chunking shrinks chunks to fit it
+      # *including* the prefix, breadcrumb, and special tokens the embedder adds
+      # — none of which CHUNK_SIZE counts. One token over and the endpoint
+      # rejects the whole batch with HTTP 400.
+      EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS:-512}
       EMBEDDING_PREFIX_DOC: "${EMBEDDING_PREFIX_DOC:-passage: }"
       EMBEDDING_PREFIX_QUERY: "${EMBEDDING_PREFIX_QUERY:-query: }"
+      EMBED_HEADERS_BREADCRUMB: ${EMBED_HEADERS_BREADCRUMB:-true}
       # Sparse embedder
       ENABLE_SPARSE_EMBEDDINGS: ${ENABLE_SPARSE_EMBEDDINGS:-false}
       SPARSE_EMBEDDING_PROVIDER: ${SPARSE_EMBEDDING_PROVIDER:-fastembed}

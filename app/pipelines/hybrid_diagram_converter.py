@@ -119,9 +119,7 @@ class HybridDiagramConverter:
                     len(lines),
                     pass_profile,
                 )
-                docs.append(
-                    self._hybrid_document(source, lines, source_meta, pass_profile)
-                )
+                docs.append(self._hybrid_document(source, lines, source_meta, pass_profile))
             else:
                 # No authoritative native text — let the vision model do the
                 # whole job (full transcription, not just topology).

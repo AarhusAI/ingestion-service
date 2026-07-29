@@ -169,8 +169,7 @@ def render_to_pngs(
         )
     else:
         raise ExtractionError(
-            f"vision-llm rendering does not support {ext or 'this file'!r} "
-            f"({Path(path).name})"
+            f"vision-llm rendering does not support {ext or 'this file'!r} ({Path(path).name})"
         )
 
     pngs = pdf_to_pngs(pdf_bytes, dpi=dpi, max_pages=max_pages)

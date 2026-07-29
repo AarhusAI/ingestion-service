@@ -57,8 +57,9 @@ flowchart LR
   C -->|Documents| S["Splitter<br/>CHUNK_SPLIT_BY"]
   S -->|Chunks + meta| DE["Dense embedder<br/>EMBEDDING_PROVIDER"]
   DE -.optional.-> SE["Sparse embedder<br/>ENABLE_SPARSE_EMBEDDINGS"]
-  DE --> W["Writer<br/>QdrantDocumentStore"]
-  SE --> W
+  DE --> G["Embedding guard<br/>dense vector required"]
+  SE --> G
+  G --> W["Writer<br/>QdrantDocumentStore"]
   W --> QD[("Qdrant")]
 
   classDef optional stroke-dasharray:5 5;
@@ -82,7 +83,9 @@ Each stage, in order:
   Three factory branches selected by `CHUNK_SPLIT_BY`: `HuggingFaceTokenizerSplitter`
   (token mode, default — measures chunk size in the embedding model's actual
   tokens), `MarkdownChunker` (markdown mode — splits on heading hierarchy first,
-  then token-packs sections; attaches `meta.headers` breadcrumb), or Haystack's
+  merges sections smaller than `CHUNK_MIN_SIZE` tokens into their neighbors,
+  then token-packs sections; attaches the `meta.headers` breadcrumb plus its
+  joined string form `meta.headers_breadcrumb`), or Haystack's
   built-in `DocumentSplitter` (word / sentence / passage modes). All branches
   attach `meta.split_id` (sequential chunk index within the file).
 
@@ -91,7 +94,11 @@ Each stage, in order:
   `EMBEDDING_PROVIDER`: `openai-compat` (HTTP, the current `embed.itkdev.dk`
   path), `fastembed` (in-process), `tei` (HTTP, OpenAI-compatible wire format).
   Applies `EMBEDDING_PREFIX_DOC` to each chunk before embedding so e5/nomic
-  models get the prefix they were trained on.
+  models get the prefix they were trained on. With `EMBED_HEADERS_BREADCRUMB=true`
+  (default) both the dense and sparse embedders also prepend the chunk's
+  `meta.headers_breadcrumb` (markdown mode's section path, e.g.
+  `Setup > Docker > Networking`) to the text they encode — the full heading
+  hierarchy steers the vector while the stored chunk content stays clean.
 
 - **Sparse embedder** (optional, `app/pipelines/embedders.py`) — when
   `ENABLE_SPARSE_EMBEDDINGS=true`, adds a second named vector per chunk
@@ -108,16 +115,25 @@ Each stage, in order:
 
 ### Idempotency
 
-Before the pipeline runs, `_delete_existing_by_file_id()` removes any existing
-Qdrant points whose `meta.file_id` matches the incoming request (when
-`overwrite=true`, which is the default). If the pipeline throws at any stage,
-the same delete runs again as teardown. The contract for callers is:
+Overwrites are **versioned (blue/green)**: every run stamps a fresh
+`meta.ingest_version` onto its chunks (which also gives them new Haystack
+document IDs), so the new version is written *alongside* any existing points.
+Only after the pipeline succeeds — and produced at least one chunk — does
+`_delete_stale_versions()` sweep every other version of that `meta.file_id`
+(when `overwrite=true`, the default). If the pipeline throws at any stage,
+`_delete_ingest_version()` tears down only the failed run's own points. The
+contract for callers is:
 
 - A `status: true` response means the file is fully indexed (all chunks
-  written, all vectors present).
-- Any other outcome means the file's chunks are absent from Qdrant — partial
-  writes don't leak through.
-- Retries with the same `file_id` are safe; no duplicate vectors.
+  written, all vectors present) and stale versions are swept.
+- A failed run leaves the **previously indexed version untouched** — the file
+  stays searchable with its old content; the failed run's partial writes are
+  torn down.
+- A run that extracts zero chunks reports success but keeps the previous
+  version — an empty extraction never replaces a good index with nothing.
+- Retries with the same `file_id` are safe; no duplicate vectors (the query
+  window where old and new versions coexist lasts only until the sweep, i.e.
+  moments after the write).
 
 Open WebUI's reindex action depends on this contract.
 
@@ -159,7 +175,7 @@ Where to start reading when you need to change something:
 - **Only for the vision engines** (`vision-llm`, `hybrid-diagram`, or `auto`
   when it routes a diagram-heavy document): a [Gotenberg](https://gotenberg.dev/)
   sidecar for office→PDF rendering — bundled in this repo's own
-  `docker-compose.yml`, so `task up` starts it for you — **and** an
+  `docker-compose.yml`, so `docker compose up` starts it for you — **and** an
   OpenAI-compatible multimodal LLM endpoint (configured via `VISION_LLM_*`).
   These are inert unless a vision engine is actually selected.
 
@@ -188,21 +204,35 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 #                    EXTERNAL_INGESTION_API_KEY. You do not set the latter two
 #                    by hand.
 
-task setup          # starts container + installs dev deps (requires Traefik 'frontend' network)
-task logs           # tail ingestion container logs
+# The 'frontend' network is external (created by Traefik in the parent stack).
+# Running standalone, create it once — a no-op if it already exists:
+docker network create frontend
+
+task setup                           # docker compose up -d --wait + install dev deps
+docker compose logs -f ingestion     # tail ingestion container logs
 ```
 
-Common task commands:
+Container lifecycle has no `task` wrappers — the Taskfile only proxies
+in-container commands (`docker compose exec ingestion …`). Use `docker compose`
+directly for start/stop/build/shell:
 
 ```shell
-task up             # start containers (creates/verifies the 'frontend' network first)
-task down           # stop containers
-task restart        # down + up
-task build          # build the container image
-task shell          # open bash shell in the ingestion container
-task install        # reinstall deps (pip install '.[dev]')
-task lint           # run all linters (ruff check + format --check)
-task lint:fix       # auto-fix lint issues
+docker compose up -d                 # start containers
+docker compose down                  # stop containers
+docker compose restart ingestion     # restart just the app container
+docker compose build                 # rebuild the image
+docker compose exec ingestion bash   # open a shell in the ingestion container
+docker compose logs -f ingestion     # tail logs
+```
+
+The `task` commands (each runs inside the ingestion container):
+
+```shell
+task setup          # first-time: docker compose up -d --wait + install dev deps
+task install        # (re)install dev deps (pip install '.[dev]')
+task lint           # run all linters (ruff check + ruff format --check)
+task lint:fix       # auto-fix lint issues (ruff check --fix)
+task lint:format    # format code (ruff format)
 task test           # run all tests (pytest -v)
 task test:coverage  # run tests with coverage report
 task audit          # security audit: pip-audit (CVEs) + bandit (static scan); advisory only
@@ -424,6 +454,35 @@ curl -H "Authorization: Bearer $API_KEY" \
 }
 ```
 
+### `DELETE /api/v1/documents/{file_id}`
+
+Removes a file's chunks from Qdrant — the symmetric counterpart to
+`PUT /api/v1/ingest`. Open WebUI calls this when a file is deleted so its
+vectors don't outlive the file (the vector store lives here now, not inside
+Open WebUI, so OWUI's own cleanup no longer reaches it). Same Bearer-token auth
+as `/api/v1/ingest`.
+
+Idempotent: deleting an unknown or already-gone `file_id` returns `200` with
+`chunks_deleted: 0`, so the caller can fire it unconditionally and retry.
+
+```shell
+curl -X DELETE \
+  -H "Authorization: Bearer $API_KEY" \
+  http://localhost:8000/api/v1/documents/abc
+```
+
+```json
+{
+  "status": true,
+  "file_id": "abc",
+  "chunks_deleted": 42
+}
+```
+
+Returns `503` (`PIPELINE_FAILED`) until the pipeline has warmed up, and `500`
+(`DELETE_FAILED`) if the Qdrant delete itself fails — both use the same
+`IngestError` shape as `/api/v1/ingest`.
+
 ## Observability
 
 Four independently-toggleable layers of insight into how documents are ingested:
@@ -448,11 +507,12 @@ Four independently-toggleable layers of insight into how documents are ingested:
   default; `false` → 404). Bearer-authenticated with the same `API_KEY` as
   `/api/v1/ingest` (mirrors retrieval-agent) — the scrape job must send
   `Authorization: Bearer <API_KEY>`. Exposes:
-  `ingest_requests_total{outcome,code}`, `ingest_duration_seconds`,
-  `ingest_chunks`, `ingest_document_bytes`,
-  `extraction_route_total{engine,signal}`, and
-  `pipeline_stage_duration_seconds{stage}` (per component — the `dense_embedder`
-  stage is the bottleneck under load).
+  `ingest_requests_total{outcome,code}`, `delete_requests_total{outcome,code}`,
+  `ingest_duration_seconds`, `ingest_chunks`, `ingest_empty_total` (successful
+  ingests that wrote zero chunks — a silent extraction failure otherwise looks
+  healthy), `ingest_document_bytes`, `extraction_route_total{engine,signal}`,
+  and `pipeline_stage_duration_seconds{stage}` (per component — the
+  `dense_embedder` stage is the bottleneck under load).
 - **Chunk inspection** — `GET /api/v1/documents/{file_id}/chunks` (above),
   gated by `ENABLE_INSPECTION_API`.
 
@@ -488,12 +548,29 @@ because they are **contracts with other services**:
   so chunks respect the model's context window — important for e5-large's
   512-token cap once the `passage: ` prefix is prepended. `markdown` mode is
   structure-aware: it splits on Markdown headings (`#`, `##`, `###`) first,
+  merges adjacent sections smaller than `CHUNK_MIN_SIZE` tokens (default 100,
+  `0` disables — never past `CHUNK_SIZE`; merged chunks keep the
+  longest-common-prefix heading path so the breadcrumb stays truthful),
   then token-packs each section that exceeds `CHUNK_SIZE`, and writes the
-  heading breadcrumb to `meta.headers` on each chunk — most useful when the
+  heading breadcrumb to `meta.headers` on each chunk (plus the joined
+  `meta.headers_breadcrumb`, which `EMBED_HEADERS_BREADCRUMB=true` feeds into
+  the embedders) — most useful when the
   converter emits Markdown (Docling natively, Kreuzberg with table rendering).
   `word`, `sentence`, and `passage` delegate to Haystack's built-in
   `DocumentSplitter` and count in those units instead. Token and markdown
   modes use `TOKENIZER_MODEL` if set, otherwise fall back to `EMBEDDING_MODEL`.
+- `EMBEDDING_MAX_TOKENS` (default `512`) is the served model's hard input limit
+  and the ceiling both HF-aware chunking modes size against. `CHUNK_SIZE` counts
+  chunk *content* only, but the embedder sends `EMBEDDING_PREFIX_DOC` + the
+  heading breadcrumb + the content, and the tokenizer adds special tokens — so
+  the effective content budget is `min(CHUNK_SIZE, EMBEDDING_MAX_TOKENS − prefix
+  − breadcrumb − specials − margin)`, recomputed per section in `markdown` mode
+  because the breadcrumb's cost varies (measured 1–53 tokens on real documents).
+  A `CHUNK_SIZE` that already fits is left untouched, so the default `400`
+  produces exactly the chunks it always did; a too-large value is clamped with an
+  INFO log naming both numbers rather than failing startup. Getting this wrong is
+  not a soft failure: the endpoint rejects the **entire batch** (32 chunks) when
+  one input is oversized.
 
 ## Supported Embedding Models
 

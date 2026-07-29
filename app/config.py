@@ -84,7 +84,7 @@ class Settings(BaseSettings):
         return self
 
     # ----- Server -----
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # nosec B104 - container-internal bind; Traefik fronts it on the frontend network
     port: int = 8000
     # Operator-triage switch (NOT a logging dial — see LOG_LEVEL_APP for that).
     # When true, ingest error responses reflect ``str(exc)`` instead of a fixed
@@ -132,9 +132,7 @@ class Settings(BaseSettings):
         allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         upper = v.upper()
         if upper not in allowed:
-            raise ValueError(
-                f"LOG_LEVEL_APP must be one of {sorted(allowed)} or empty; got {v!r}"
-            )
+            raise ValueError(f"LOG_LEVEL_APP must be one of {sorted(allowed)} or empty; got {v!r}")
         return upper
 
     @field_validator("log_format")
@@ -314,6 +312,24 @@ class Settings(BaseSettings):
     chunk_size: int = 400
     chunk_overlap: int = 80
     chunk_split_by: str = "token"  # token | markdown | word | sentence | passage
+    # markdown mode only: sections smaller than this many tokens merge into
+    # adjacent ones (never past chunk_size), so heading-dense docs don't
+    # produce tiny chunks that embed poorly and waste Qdrant points. 0
+    # disables merging. Changing it changes chunk boundaries, so reindex for
+    # consistency.
+    chunk_min_size: int = 100
+
+    @model_validator(mode="after")
+    def _validate_chunk_sizes(self):
+        if self.chunk_min_size < 0:
+            raise ValueError(f"CHUNK_MIN_SIZE must be >= 0; got {self.chunk_min_size}")
+        if self.chunk_min_size > self.chunk_size:
+            raise ValueError(
+                f"CHUNK_MIN_SIZE ({self.chunk_min_size}) must not exceed "
+                f"CHUNK_SIZE ({self.chunk_size})"
+            )
+        return self
+
     # Optional override; empty falls back to embedding_model. Used in token
     # and markdown modes.
     tokenizer_model: str = ""
@@ -330,11 +346,26 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = "intfloat/multilingual-e5-large"
     embedding_dim: int = 1024
+    # Hard input limit of the *served* embedding model, in tokens (e5-large: 512).
+    # A contract with the endpoint, not a preference: one token over and the
+    # server rejects the entire request *batch* with HTTP 400, so a single
+    # oversized chunk costs every other chunk batched with it. Token/markdown
+    # chunking treats this as a ceiling and shrinks chunks so everything the
+    # embedder actually sends fits — EMBEDDING_PREFIX_DOC, the heading
+    # breadcrumb, and the tokenizer's special tokens, none of which CHUNK_SIZE
+    # counts. Raise it only if the endpoint really serves a longer context.
+    embedding_max_tokens: int = 512
     # Required by the model card. e5: "passage: " on docs, "query: " on queries; bge-m3 takes none.
     embedding_prefix_doc: str = "passage: "
     # Not used at indexing time; kept here so the contract is documented in one
     # place and the retrieval agent's prefix can be sanity-checked against ours.
     embedding_prefix_query: str = "query: "
+    # Prepend the section-heading breadcrumb (meta.headers_breadcrumb, e.g.
+    # "Setup > Docker > Networking") to the text the embedders see — stored
+    # chunk content is untouched. Only has an effect with
+    # CHUNK_SPLIT_BY=markdown (the only mode that stamps the field). Flipping
+    # this changes vectors, so reindex for consistency.
+    embed_headers_breadcrumb: bool = True
 
     # ----- Sparse embedder (optional) -----
     enable_sparse_embeddings: bool = False

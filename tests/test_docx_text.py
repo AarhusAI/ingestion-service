@@ -8,9 +8,7 @@ import zipfile
 
 from app.pipelines.docx_text import extract_docx_lines, extract_docx_text
 
-_NS = (
-    'xmlns:w="w" xmlns:mc="mc" xmlns:wps="wps" xmlns:v="v"'
-)
+_NS = 'xmlns:w="w" xmlns:mc="mc" xmlns:wps="wps" xmlns:v="v"'
 
 
 def _run(text: str) -> str:

@@ -77,7 +77,7 @@ def test_request_meta_wins_over_hybrid_meta():
 def test_mermaid_fence_extracted_from_noisy_vision_output():
     # The topology profile asks for the fence only, but a chatty model may wrap
     # it — we keep just the fence under our heading.
-    noisy = "Sure!\n```mermaid\nflowchart TD\n  n1[\"X\"]\n```\nHope this helps"
+    noisy = 'Sure!\n```mermaid\nflowchart TD\n  n1["X"]\n```\nHope this helps'
     vision = _vision(content=noisy)
     with patch.object(hdc, "extract_docx_lines", return_value=["A", "B", "C"]):
         doc = _build(vision).run(sources=["f.docx"], meta=None)["documents"][0]
@@ -126,7 +126,7 @@ def test_raster_docx_uses_figure_profile_and_keeps_full_output():
 def test_figure_extraction_empty_falls_back_to_full_page_render():
     # No extractable blip (odd package) -> images_override omitted so the vision
     # converter renders the page as before. Still no grounding on the figure path.
-    vision = _vision(content="## Fig\n```mermaid\nflowchart TD\n  n1[\"X\"]\n```")
+    vision = _vision(content='## Fig\n```mermaid\nflowchart TD\n  n1["X"]\n```')
     with (
         patch.object(hdc, "extract_docx_lines", return_value=["A", "B", "C"]),
         patch.object(hdc, "docx_diagram_profile", return_value="figure"),
