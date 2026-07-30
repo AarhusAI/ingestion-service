@@ -87,6 +87,13 @@ services:
       EMBEDDING_PREFIX_DOC: "${EMBEDDING_PREFIX_DOC:-passage: }"
       EMBEDDING_PREFIX_QUERY: "${EMBEDDING_PREFIX_QUERY:-query: }"
       EMBED_HEADERS_BREADCRUMB: ${EMBED_HEADERS_BREADCRUMB:-true}
+      # HTTP budget for the dense embedder (openai-compat / tei only). Split
+      # connect/read so a dead endpoint fails fast while a slow one still gets
+      # 30s. 16 retries absorb ~78-104s of downtime (worst case ~189s), so a
+      # transient blip no longer surfaces as a failed upload.
+      EMBEDDING_CONNECT_TIMEOUT: ${EMBEDDING_CONNECT_TIMEOUT:-5.0}
+      EMBEDDING_READ_TIMEOUT: ${EMBEDDING_READ_TIMEOUT:-30.0}
+      EMBEDDING_MAX_RETRIES: ${EMBEDDING_MAX_RETRIES:-16}
       # Sparse embedder
       ENABLE_SPARSE_EMBEDDINGS: ${ENABLE_SPARSE_EMBEDDINGS:-false}
       SPARSE_EMBEDDING_PROVIDER: ${SPARSE_EMBEDDING_PROVIDER:-fastembed}

@@ -559,6 +559,18 @@ because they are **contracts with other services**:
   `word`, `sentence`, and `passage` delegate to Haystack's built-in
   `DocumentSplitter` and count in those units instead. Token and markdown
   modes use `TOKENIZER_MODEL` if set, otherwise fall back to `EMBEDDING_MODEL`.
+- `EMBEDDING_CONNECT_TIMEOUT` / `EMBEDDING_READ_TIMEOUT` / `EMBEDDING_MAX_RETRIES`
+  (defaults `5.0` / `30.0` / `16`) are the dense embedder's HTTP budget, applied to
+  the `openai-compat` and `tei` providers (`fastembed` is in-process). Connect and
+  read are split deliberately — a blackholed endpoint fails in 5 s per attempt
+  while a slow-but-alive one still gets 30 s — and that is what makes the retry
+  count affordable. With openai's backoff (`min(0.5·2ⁿ, 8)` s, jittered downward),
+  16 retries absorb **~78–104 s** of endpoint downtime rather than failing the
+  user's upload, for a worst case of ~189 s. Left unset, Haystack substitutes
+  `timeout=30.0, max_retries=5`, which absorbs only ~13 s. The cost is bounded per
+  *ingest* rather than per batch, because `raise_on_failure=True` aborts on the
+  first failing batch; keep the worst case inside the caller's
+  `EXTERNAL_INGESTION_TIMEOUT` (900 s in the parent stack).
 - `EMBEDDING_MAX_TOKENS` (default `512`) is the served model's hard input limit
   and the ceiling both HF-aware chunking modes size against. `CHUNK_SIZE` counts
   chunk *content* only, but the embedder sends `EMBEDDING_PREFIX_DOC` + the
