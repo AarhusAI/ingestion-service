@@ -320,8 +320,9 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
             metrics.ingest_chunks.observe(chunks_count)
             if overwrite and chunks_count > 0:
                 # New version fully written — sweep every other version of this
-                # file (including pre-versioning points without the field).
-                _delete_stale_versions(file_id, ingest_version)
+                # file in THIS collection (including pre-versioning points
+                # without the field). Copies in other collections are kept.
+                _delete_stale_versions(file_id, meta["collection_name"], ingest_version)
             if chunks_count == 0:
                 # A zero-chunk ingest reports success to the caller, so this
                 # is the only operator-visible signal that extraction yielded
@@ -379,20 +380,22 @@ def _extraction_summary(result: dict) -> dict | None:
     return {"engine": engine, "route": route}
 
 
-def _delete_stale_versions(file_id: str, keep_version: str) -> None:
-    """Delete every point of ``file_id`` EXCEPT the just-written version.
+def _delete_stale_versions(file_id: str, collection_name: str, keep_version: str) -> None:
+    """Delete every point of ``file_id`` in ``collection_name`` EXCEPT the
+    just-written version.
 
-    Runs after a successful overwrite write. ``must_not`` on
-    ``meta.ingest_version`` also matches points that predate versioning (the
-    field is absent), so the first versioned overwrite sweeps legacy points
-    too. Swallows errors — a failed sweep leaves the old version serving
-    alongside the new one (duplicates, not data loss), and the next
-    successful overwrite cleans both up.
+    Runs after a successful overwrite write. Scoped per collection so a file
+    indexed into several collections (``file-<id>`` plus one or more KBs)
+    keeps one live copy in each. ``must_not`` on ``meta.ingest_version`` also
+    matches points that predate versioning (the field is absent), so the first
+    versioned overwrite sweeps legacy points too. Swallows errors — a failed
+    sweep leaves the old version serving alongside the new one (duplicates,
+    not data loss), and the next successful overwrite cleans both up.
     """
     try:
         _raw_qdrant_client().delete(
             collection_name=_active_settings().qdrant_index,
-            points_selector=_stale_version_filter(file_id, keep_version),
+            points_selector=_stale_version_filter(file_id, collection_name, keep_version),
         )
     except Exception:
         log.warning(
@@ -438,11 +441,14 @@ def _version_filter(file_id: str, version: str) -> Filter:
     )
 
 
-def _stale_version_filter(file_id: str, keep_version: str) -> Filter:
-    """Points of one file that do NOT carry ``keep_version`` — including
-    pre-versioning points where ``meta.ingest_version`` is absent."""
+def _stale_version_filter(file_id: str, collection_name: str, keep_version: str) -> Filter:
+    """Points of one file in one collection that do NOT carry ``keep_version``
+    — including pre-versioning points where ``meta.ingest_version`` is absent."""
     return Filter(
-        must=[FieldCondition(key="meta.file_id", match=MatchValue(value=file_id))],
+        must=[
+            FieldCondition(key="meta.file_id", match=MatchValue(value=file_id)),
+            FieldCondition(key="meta.collection_name", match=MatchValue(value=collection_name)),
+        ],
         must_not=[FieldCondition(key="meta.ingest_version", match=MatchValue(value=keep_version))],
     )
 

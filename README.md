@@ -119,8 +119,10 @@ Overwrites are **versioned (blue/green)**: every run stamps a fresh
 `meta.ingest_version` onto its chunks (which also gives them new Haystack
 document IDs), so the new version is written *alongside* any existing points.
 Only after the pipeline succeeds — and produced at least one chunk — does
-`_delete_stale_versions()` sweep every other version of that `meta.file_id`
-(when `overwrite=true`, the default). If the pipeline throws at any stage,
+`_delete_stale_versions()` sweep every other version of that file, scoped per
+`meta.file_id` + `meta.collection_name` (when `overwrite=true`, the default) —
+copies of the same file in other collections (`file-<id>`, other KBs) are
+kept. If the pipeline throws at any stage,
 `_delete_ingest_version()` tears down only the failed run's own points. The
 contract for callers is:
 
@@ -348,10 +350,11 @@ Codes: `EXTRACTION_FAILED`, `EMBEDDING_FAILED`, `SPARSE_EMBEDDING_FAILED`,
 
 #### Idempotency
 
-When `overwrite=true` (default), all existing Qdrant points with matching
-`meta.file_id` are deleted before writing new chunks. Retries are safe — they
-delete-and-rewrite, no duplicates. On any pipeline failure the same delete runs
-as teardown, so partial writes never leak into Qdrant.
+When `overwrite=true` (default), the new version is written first, then every
+other version of the file is swept, per `meta.file_id` + `meta.collection_name`
+(copies of the file in other collections are kept). Retries are safe — no
+duplicates. On any pipeline failure only the failed run's own points are torn
+down, so partial writes never leak into Qdrant.
 
 ### `POST /api/v1/extract`
 
