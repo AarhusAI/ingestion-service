@@ -16,8 +16,19 @@ services:
         APP_GID: ${APP_GID:-1000}
       platforms:
         - "linux/amd64"
-#        - "linux/arm64"
-    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    #        - "linux/arm64"
+    command:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+      ]
     networks:
       - app
       - frontend

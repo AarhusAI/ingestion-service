@@ -99,7 +99,8 @@ tasks:
   lint:yaml:
     desc: Check YAML formatting with prettier (as CI does)
     cmds:
-      - "{{.DOCKER_COMPOSE}} run --rm prettier '**/*.{yml,yaml}' --check"
+      # Falls back to .env.example so compose's required vars (`:?`) resolve.
+      - "{{.DOCKER_COMPOSE}} $([ -f .env ] || echo --env-file .env.example) run --rm prettier '**/*.{yml,yaml}' --check"
 
   # ==========================================================================
   # Testing
