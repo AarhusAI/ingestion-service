@@ -1,0 +1,23 @@
+name: Markdown
+
+on:
+  pull_request:
+    paths: &paths
+      - "**/*.md"
+      - ".markdownlint.jsonc"
+      - ".markdownlintignore"
+
+  push:
+    branches:
+      - main
+      - develop
+    paths: *paths
+
+jobs:
+  markdown-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: |
+          docker run -v ./:/md --rm itkdev/markdownlint markdownlint '**/*.md'
