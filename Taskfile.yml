@@ -96,6 +96,11 @@ tasks:
     cmds:
       - "{{.PYTHON}} ruff format --check ."
 
+  lint:yaml:
+    desc: Check YAML formatting with prettier (as CI does)
+    cmds:
+      - "{{.DOCKER_COMPOSE}} run --rm prettier '**/*.{yml,yaml}' --check"
+
   # ==========================================================================
   # Testing
   # ==========================================================================
@@ -139,7 +144,6 @@ tasks:
     cmds:
       - task: lint
       - task: test
-
 
   # ---------------------------------------------------------------------------
   # Build
