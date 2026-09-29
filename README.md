@@ -144,7 +144,7 @@ Open WebUI's reindex action depends on this contract.
 Where to start reading when you need to change something:
 
 | File | What lives there |
-|---|---|
+| --- | --- |
 | `app/main.py` | FastAPI app, lifespan, health endpoints |
 | `app/routes/ingest.py` | `PUT /api/v1/ingest` — auth, content-type dispatch, temp-file lifecycle, error code mapping |
 | `app/routes/extract.py` | `POST /api/v1/extract` — developer-facing extraction probe |
@@ -260,12 +260,15 @@ task build:image TAG=v1.0.0                   # with specific tag
 task build:image PLATFORMS=linux/amd64        # single-arch (skips QEMU emulation; much faster for local iteration)
 ```
 
-First run will create a buildx builder (`ingestion-service-builder`) and register QEMU binfmt handlers for cross-arch emulation — idempotent, no-op on subsequent runs.
+First run will create a buildx builder (`ingestion-service-builder`) and register QEMU binfmt handlers for
+cross-arch emulation — idempotent, no-op on subsequent runs.
 
 ## Health Endpoints
 
 - `GET /health` — liveness probe (always 200 if the process is running)
-- `GET /health/ready` — readiness probe. Returns 503 until the Haystack pipeline has finished warming up (the sparse embedder pulls its model from HuggingFace on first boot — ~80 MB) **and** Qdrant is reachable. This keeps Docker / Kubernetes from routing traffic during cold start.
+- `GET /health/ready` — readiness probe. Returns 503 until the Haystack pipeline has finished warming up (the sparse
+  embedder pulls its model from HuggingFace on first boot — ~80 MB) **and** Qdrant is reachable. This keeps Docker /
+  Kubernetes from routing traffic during cold start.
 
 ## API
 
@@ -530,9 +533,9 @@ because they are **contracts with other services**:
 - `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY` (and the
   retrieval agent's parallel value when querying the same data).
 - `EMBEDDING_MODEL`, `EMBEDDING_DIM`, and `EMBEDDING_PREFIX_DOC` must match
-  whatever the retrieval agent uses at query time. e5 needs `passage: ` on
-  documents and `query: ` on queries; bge-m3 takes no prefix; nomic uses
-  `search_document: ` / `search_query: `.
+  whatever the retrieval agent uses at query time. e5 needs `"passage: "` on
+  documents and `"query: "` on queries; bge-m3 takes no prefix; nomic uses
+  `"search_document: "` / `"search_query: "`.
 - `QDRANT_INDEX` is the physical Qdrant collection. Defaults to
   `ingestion_files` — distinct from Open WebUI's legacy multitenancy collections.
 - `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
@@ -551,7 +554,7 @@ because they are **contracts with other services**:
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
   so chunks respect the model's context window — important for e5-large's
-  512-token cap once the `passage: ` prefix is prepended. `markdown` mode is
+  512-token cap once the `"passage: "` prefix is prepended. `markdown` mode is
   structure-aware: it splits on Markdown headings (`#`, `##`, `###`) first,
   merges adjacent sections smaller than `CHUNK_MIN_SIZE` tokens (default 100,
   `0` disables — never past `CHUNK_SIZE`; merged chunks keep the
@@ -592,25 +595,27 @@ because they are **contracts with other services**:
 ## Supported Embedding Models
 
 | Model | Dim | Doc / query prefix | Native sparse |
-|---|---|---|---|
-| `intfloat/multilingual-e5-large` | 1024 | `passage: ` / `query: ` | — |
+| --- | --- | --- | --- |
+| `intfloat/multilingual-e5-large` | 1024 | `"passage: "` / `"query: "` | — |
 | `BAAI/bge-m3` | 1024 | none / none | yes |
 | `jinaai/jina-embeddings-v3` | 1024 | task-specific | — |
-| `nomic-ai/nomic-embed-text-v1.5` | 768 | `search_document: ` / `search_query: ` | — |
+| `nomic-ai/nomic-embed-text-v1.5` | 768 | `"search_document: "` / `"search_query: "` | — |
 
 `EMBEDDING_PROVIDER`:
+
 - `openai-compat` → `OpenAIDocumentEmbedder` (the current `embed.itkdev.dk` path)
 - `fastembed` → `FastembedDocumentEmbedder` (in-process inference; supports BGE-M3 dense)
 - `tei` → routes through `OpenAIDocumentEmbedder` (TEI exposes an OpenAI-compatible endpoint)
 
 `SPARSE_EMBEDDING_PROVIDER`:
+
 - `fastembed` → `FastembedSparseDocumentEmbedder` (BGE-M3 sparse, BM42, SPLADE family)
 - `none` → no sparse stage, dense-only pipeline
 
 ## Extraction Engines
 
 | `EXTRACTION_ENGINE` | Status | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `kreuzberg` | day-one (default) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `pypdf` | day-one | In-process, PDF-only, lightweight |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |

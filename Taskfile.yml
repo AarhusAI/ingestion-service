@@ -70,6 +70,8 @@ tasks:
       - task: lint:check
       - task: lint:format:check
       - task: lint:types
+      - task: lint:yaml
+      - task: lint:markdown
 
   lint:types:
     desc: Type-check with basedpyright (new errors only; see .basedpyright/baseline.json)
@@ -101,6 +103,12 @@ tasks:
     cmds:
       # Falls back to .env.example so compose's required vars (`:?`) resolve.
       - "{{.DOCKER_COMPOSE}} $([ -f .env ] || echo --env-file .env.example) run --rm prettier '**/*.{yml,yaml}' --check"
+
+  lint:markdown:
+    desc: "Check Markdown with markdownlint (as CI does; task lint:markdown -- --fix to auto-fix)"
+    cmds:
+      # Host uid/gid so --fix can write to the bind mount.
+      - "{{.CONTAINER_RUNTIME}} run --rm --user $(id -u):$(id -g) -v ./:/md itkdev/markdownlint markdownlint '**/*.md' {{.CLI_ARGS}}"
 
   # ==========================================================================
   # Testing

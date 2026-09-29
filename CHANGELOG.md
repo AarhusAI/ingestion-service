@@ -2,17 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog],
-and this project adheres to [Semantic Versioning].
+The format is based on [Keep a Changelog], and this project adheres to [Semantic Versioning].
 
 ## [Unreleased]
+
+- Added actions and linted code base.
 
 ## [0.0.8] - 2026-09-24
 
 ### Fixed
 
--Ensure that files attached and knowledge bases do not override each other. Scoping by collection keeps a file's copies
-  in other collections (`file-<id>` plus each KB it belongs to) alive.
+- Ensure that files attached and knowledge bases do not override each other. Scoping by collection keeps a file's copies
+in other collections (`file-<id>` plus each KB it belongs to) alive.
 
 ## [0.0.7] - 2026-07-30
 
@@ -24,10 +25,15 @@ and this project adheres to [Semantic Versioning].
 
 ### Added
 
-- Hard cap on embedding input tokens via new `EMBEDDING_MAX_TOKENS` setting (default 512). Chunks shrink so content, doc prefix, heading breadcrumb and special tokens all fit, preventing one oversized chunk from making the endpoint reject a whole batch with HTTP 400.
-- New `CHUNK_MIN_SIZE` setting (default 100). In markdown mode, tiny adjacent sections are merged, never past `CHUNK_SIZE`. Set to 0 to disable.
-- New `EMBED_HEADERS_BREADCRUMB` setting (default `true`). Embedders now see the full heading path (e.g. "Setup > Docker > Networking"), not just the leaf heading. Stored chunk content is unchanged.
-- Every ingest run stamps a fresh `meta.ingest_version` on its chunks. New chunks are written alongside the old ones, and the old version is deleted only after the new one ingests successfully.
+- Hard cap on embedding input tokens via new `EMBEDDING_MAX_TOKENS` setting (default 512). Chunks shrink so content, doc
+  prefix, heading breadcrumb and special tokens all fit, preventing one oversized chunk from making the endpoint reject
+  a whole batch with HTTP 400.
+- New `CHUNK_MIN_SIZE` setting (default 100). In markdown mode, tiny adjacent sections are merged, never past
+  `CHUNK_SIZE`. Set to 0 to disable.
+- New `EMBED_HEADERS_BREADCRUMB` setting (default `true`). Embedders now see the full heading path (e.g. "Setup >
+  Docker > Networking"), not just the leaf heading. Stored chunk content is unchanged.
+- Every ingest run stamps a fresh `meta.ingest_version` on its chunks. New chunks are written alongside the old ones,
+  and the old version is deleted only after the new one ingests successfully.
 - Data flow documentation (`docs/data-flow.md`) with diagrams.
 
 ### Changed
@@ -45,8 +51,9 @@ and this project adheres to [Semantic Versioning].
 
 ### Upgrade notes
 
-- `CHUNK_MIN_SIZE`, `EMBED_HEADERS_BREADCRUMB` and `EMBEDDING_MAX_TOKENS` change chunk boundaries or vectors. Reindex existing collections for consistency.
- 
+- `CHUNK_MIN_SIZE`, `EMBED_HEADERS_BREADCRUMB` and `EMBEDDING_MAX_TOKENS` change chunk boundaries or vectors. Reindex
+  existing collections for consistency.
+
 ## [0.0.5] - 2026-07-02
 
 ### Added
@@ -62,22 +69,9 @@ and this project adheres to [Semantic Versioning].
 
 - Legacy Tika support.
 
-## [0.0.4] - 2026-06-12
-
-## [0.0.3] - 2026-07-11
-
-## [0.0.2] - 2026-07-11
-
-## [0.0.1] - 2026-07-04
-
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
 [unreleased]: https://github.com/AarhusAI/ingestion-service/compare/v0.0.5...HEAD
+[0.0.8]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.8
+[0.0.7]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.7
 [0.0.5]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.5
-[0.0.7]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.5
-[0.0.6]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.5
-[0.0.5]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.5
-[0.0.4]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.4
-[0.0.3]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.3
-[0.0.2]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.2
-[0.0.1]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.1
