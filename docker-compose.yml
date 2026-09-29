@@ -11,6 +11,9 @@ services:
       dockerfile: Dockerfile
       context: .
       target: ${TARGET:-dev}
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
       platforms:
         - "linux/amd64"
 #        - "linux/arm64"

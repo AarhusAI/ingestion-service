@@ -24,7 +24,12 @@ tasks:
   install:
     desc: Install project dependencies (dev)
     cmds:
-      - "{{.PYTHON}} pip install '.[dev]'"
+      - "{{.PYTHON}} uv sync --frozen --extra dev"
+
+  lock:
+    desc: "Re-lock dependencies after editing pyproject.toml (task lock -- --upgrade to bump)"
+    cmds:
+      - "{{.PYTHON}} uv lock {{.CLI_ARGS}}"
 
   setup:
     desc: First-time project setup
@@ -64,6 +69,12 @@ tasks:
     cmds:
       - task: lint:check
       - task: lint:format:check
+      - task: lint:types
+
+  lint:types:
+    desc: Type-check with basedpyright (new errors only; see .basedpyright/baseline.json)
+    cmds:
+      - "{{.PYTHON}} basedpyright"
 
   lint:check:
     desc: Check code with ruff

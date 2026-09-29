@@ -231,8 +231,10 @@ The `task` commands (each runs inside the ingestion container):
 
 ```shell
 task setup          # first-time: docker compose up -d --wait + install dev deps
-task install        # (re)install dev deps (pip install '.[dev]')
-task lint           # run all linters (ruff check + ruff format --check)
+task install        # (re)install dev deps from uv.lock (uv sync --frozen --extra dev)
+task lock           # re-lock after editing pyproject.toml (task lock -- --upgrade to bump versions)
+task lint           # run all linters (ruff check + ruff format --check + basedpyright)
+task lint:types     # type-check (basedpyright; only errors not in .basedpyright/baseline.json fail)
 task lint:fix       # auto-fix lint issues (ruff check --fix)
 task lint:format    # format code (ruff format)
 task test           # run all tests (pytest -v)

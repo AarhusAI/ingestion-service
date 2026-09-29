@@ -27,16 +27,27 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
+# Dependencies come from uv.lock, so dev and prod install exactly what CI tested.
+# The venv lives outside /app because the dev bind mount (./:/app) would hide it.
+COPY --from=ghcr.io/astral-sh/uv:0.9.30 /uv /usr/local/bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    PATH=/opt/venv/bin:$PATH
+
+COPY pyproject.toml uv.lock ./
 
 # --- Dev target: includes test/lint tools ---
 FROM base AS dev
 ARG APP_UID
 ARG APP_GID
-RUN pip install --no-cache-dir ".[dev]"
+RUN uv sync --frozen --no-cache --no-install-project --extra dev
 COPY app/ app/
 RUN addgroup --system --gid ${APP_GID} appuser \
  && adduser --system --no-create-home --uid ${APP_UID} --ingroup appuser appuser \
+ # Owned by appuser so `task install` can re-sync the venv inside the container.
+ && chown -R appuser:appuser /opt/venv \
  # /cache is the HuggingFace + fastembed model cache mount point. Docker's
  # named-volume first-mount semantics copy this directory's ownership into
  # the volume, so creating it as appuser here is what lets the non-root
@@ -52,7 +63,7 @@ CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "
 FROM base AS prod
 ARG APP_UID
 ARG APP_GID
-RUN pip install --no-cache-dir .
+RUN uv sync --frozen --no-cache --no-install-project
 COPY app/ app/
 RUN addgroup --system --gid ${APP_GID} appuser \
  && adduser --system --no-create-home --uid ${APP_UID} --ingroup appuser appuser \

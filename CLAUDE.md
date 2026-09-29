@@ -16,7 +16,7 @@ The pipeline is configurable end-to-end:
 
 ## Build & Run
 
-The repo is **standalone** — its own `docker-compose.yml`, its own `.env`, run from the service root. The Dockerfile is multi-stage: `dev` target has test/lint tools (ruff, pytest), `prod` target is runtime-only. Compose defaults to `dev`. Python 3.12 in the container; `pyproject.toml` requires `>=3.11`.
+The repo is **standalone** — its own `docker-compose.yml`, its own `.env`, run from the service root. The Dockerfile is multi-stage: `dev` target has test/lint tools (ruff, pytest), `prod` target is runtime-only. Compose defaults to `dev`. Python 3.12 in the container; `pyproject.toml` requires `>=3.11`. Dependencies are locked in `uv.lock` and both targets install with `uv sync --frozen` into `/opt/venv` (outside `/app`, so the dev bind mount doesn't hide it). After editing `pyproject.toml`, run `task lock` and commit the lock — CI fails on `uv lock --check` otherwise. basedpyright runs in standard mode against `.basedpyright/baseline.json`; only new errors fail.
 
 The `frontend` Docker network is **external** — created by Traefik in the parent stack, or manually via `docker network create frontend` for standalone use. `docker compose up` fails without it (`task setup` brings the stack up with `docker compose up -d --wait` for first-time setup, but there is no `task up`/`down`/`restart`/`shell`/`logs` wrapper for day-to-day lifecycle — use `docker compose` directly for those).
 
@@ -101,7 +101,7 @@ All config via environment variables, loaded by pydantic-settings in `app/config
 ## Rules
 
 - **Never read `.env` files.** They contain secrets (API keys, credentials). Use `.env.example` to understand available settings.
-- **Always run Python commands inside the Docker container.** `pip install`, `pytest`, `ruff`, and any other project commands must be executed via `docker compose exec ingestion ...` from the repo root (or via the `task` wrapper). Never install or run Python tooling on the host.
+- **Always run Python commands inside the Docker container.** `uv`, `pytest`, `ruff`, `basedpyright`, and any other project commands must be executed via `docker compose exec ingestion ...` from the repo root (or via the `task` wrapper). Never install or run Python tooling on the host.
 
 ## Failure-mode notes
 
