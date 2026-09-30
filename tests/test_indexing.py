@@ -259,7 +259,22 @@ def test_overwrite_writes_new_version_before_sweeping_stale(monkeypatch):
     assert order == ["run", "delete"], "write must happen before the stale sweep"
     version = _stamped_version(mock_pipeline)
     _, kwargs = client.delete.call_args
-    assert kwargs["points_selector"] == indexing._stale_version_filter("f-v", version)
+    assert kwargs["points_selector"] == indexing._stale_version_filter("f-v", "file-f-v", version)
+
+
+def test_overwrite_sweep_is_scoped_to_the_ingested_collection(monkeypatch):
+    """Adding a file to a KB must not sweep its file-<id> copy (or another
+    KB's copy): the stale filter pins meta.collection_name to the ingest's."""
+    client = _mock_raw_client(monkeypatch)
+    _mock_pipeline_run(monkeypatch, chunks=3)
+
+    indexing.run_indexing_pipeline(
+        "/tmp/fake.pdf", {"file_id": "f-kb", "collection_name": "kb-1", "overwrite": True}
+    )
+
+    _, kwargs = client.delete.call_args
+    must = {c.key: c.match.value for c in kwargs["points_selector"].must}
+    assert must == {"meta.file_id": "f-kb", "meta.collection_name": "kb-1"}
 
 
 def test_meta_stamped_with_version_and_overwrite_stripped(monkeypatch):
@@ -373,8 +388,8 @@ def test_stale_filter_shape_sweeps_unversioned_legacy_points():
     """The sweep filter must use must_not on ingest_version (matching points
     where the field is ABSENT too) so pre-versioning points get cleaned up by
     the first versioned overwrite."""
-    f = indexing._stale_version_filter("f-1", "v-keep")
-    assert [c.key for c in f.must] == ["meta.file_id"]
+    f = indexing._stale_version_filter("f-1", "file-f-1", "v-keep")
+    assert [c.key for c in f.must] == ["meta.file_id", "meta.collection_name"]
     assert [c.key for c in f.must_not] == ["meta.ingest_version"]
     assert f.must_not[0].match.value == "v-keep"
 

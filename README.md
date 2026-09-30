@@ -119,8 +119,10 @@ Overwrites are **versioned (blue/green)**: every run stamps a fresh
 `meta.ingest_version` onto its chunks (which also gives them new Haystack
 document IDs), so the new version is written *alongside* any existing points.
 Only after the pipeline succeeds — and produced at least one chunk — does
-`_delete_stale_versions()` sweep every other version of that `meta.file_id`
-(when `overwrite=true`, the default). If the pipeline throws at any stage,
+`_delete_stale_versions()` sweep every other version of that file, scoped per
+`meta.file_id` + `meta.collection_name` (when `overwrite=true`, the default) —
+copies of the same file in other collections (`file-<id>`, other KBs) are
+kept. If the pipeline throws at any stage,
 `_delete_ingest_version()` tears down only the failed run's own points. The
 contract for callers is:
 
@@ -142,7 +144,7 @@ Open WebUI's reindex action depends on this contract.
 Where to start reading when you need to change something:
 
 | File | What lives there |
-|---|---|
+| --- | --- |
 | `app/main.py` | FastAPI app, lifespan, health endpoints |
 | `app/routes/ingest.py` | `PUT /api/v1/ingest` — auth, content-type dispatch, temp-file lifecycle, error code mapping |
 | `app/routes/extract.py` | `POST /api/v1/extract` — developer-facing extraction probe |
@@ -229,8 +231,10 @@ The `task` commands (each runs inside the ingestion container):
 
 ```shell
 task setup          # first-time: docker compose up -d --wait + install dev deps
-task install        # (re)install dev deps (pip install '.[dev]')
-task lint           # run all linters (ruff check + ruff format --check)
+task install        # (re)install dev deps from uv.lock (uv sync --frozen --extra dev)
+task lock           # re-lock after editing pyproject.toml (task lock -- --upgrade to bump versions)
+task lint           # run all linters (ruff check + ruff format --check + basedpyright)
+task lint:types     # type-check (basedpyright; only errors not in .basedpyright/baseline.json fail)
 task lint:fix       # auto-fix lint issues (ruff check --fix)
 task lint:format    # format code (ruff format)
 task test           # run all tests (pytest -v)
@@ -256,12 +260,15 @@ task build:image TAG=v1.0.0                   # with specific tag
 task build:image PLATFORMS=linux/amd64        # single-arch (skips QEMU emulation; much faster for local iteration)
 ```
 
-First run will create a buildx builder (`ingestion-service-builder`) and register QEMU binfmt handlers for cross-arch emulation — idempotent, no-op on subsequent runs.
+First run will create a buildx builder (`ingestion-service-builder`) and register QEMU binfmt handlers for
+cross-arch emulation — idempotent, no-op on subsequent runs.
 
 ## Health Endpoints
 
 - `GET /health` — liveness probe (always 200 if the process is running)
-- `GET /health/ready` — readiness probe. Returns 503 until the Haystack pipeline has finished warming up (the sparse embedder pulls its model from HuggingFace on first boot — ~80 MB) **and** Qdrant is reachable. This keeps Docker / Kubernetes from routing traffic during cold start.
+- `GET /health/ready` — readiness probe. Returns 503 until the Haystack pipeline has finished warming up (the sparse
+  embedder pulls its model from HuggingFace on first boot — ~80 MB) **and** Qdrant is reachable. This keeps Docker /
+  Kubernetes from routing traffic during cold start.
 
 ## API
 
@@ -348,10 +355,11 @@ Codes: `EXTRACTION_FAILED`, `EMBEDDING_FAILED`, `SPARSE_EMBEDDING_FAILED`,
 
 #### Idempotency
 
-When `overwrite=true` (default), all existing Qdrant points with matching
-`meta.file_id` are deleted before writing new chunks. Retries are safe — they
-delete-and-rewrite, no duplicates. On any pipeline failure the same delete runs
-as teardown, so partial writes never leak into Qdrant.
+When `overwrite=true` (default), the new version is written first, then every
+other version of the file is swept, per `meta.file_id` + `meta.collection_name`
+(copies of the file in other collections are kept). Retries are safe — no
+duplicates. On any pipeline failure only the failed run's own points are torn
+down, so partial writes never leak into Qdrant.
 
 ### `POST /api/v1/extract`
 
@@ -525,9 +533,9 @@ because they are **contracts with other services**:
 - `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY` (and the
   retrieval agent's parallel value when querying the same data).
 - `EMBEDDING_MODEL`, `EMBEDDING_DIM`, and `EMBEDDING_PREFIX_DOC` must match
-  whatever the retrieval agent uses at query time. e5 needs `passage: ` on
-  documents and `query: ` on queries; bge-m3 takes no prefix; nomic uses
-  `search_document: ` / `search_query: `.
+  whatever the retrieval agent uses at query time. e5 needs `"passage: "` on
+  documents and `"query: "` on queries; bge-m3 takes no prefix; nomic uses
+  `"search_document: "` / `"search_query: "`.
 - `QDRANT_INDEX` is the physical Qdrant collection. Defaults to
   `ingestion_files` — distinct from Open WebUI's legacy multitenancy collections.
 - `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
@@ -546,7 +554,7 @@ because they are **contracts with other services**:
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
   so chunks respect the model's context window — important for e5-large's
-  512-token cap once the `passage: ` prefix is prepended. `markdown` mode is
+  512-token cap once the `"passage: "` prefix is prepended. `markdown` mode is
   structure-aware: it splits on Markdown headings (`#`, `##`, `###`) first,
   merges adjacent sections smaller than `CHUNK_MIN_SIZE` tokens (default 100,
   `0` disables — never past `CHUNK_SIZE`; merged chunks keep the
@@ -559,6 +567,18 @@ because they are **contracts with other services**:
   `word`, `sentence`, and `passage` delegate to Haystack's built-in
   `DocumentSplitter` and count in those units instead. Token and markdown
   modes use `TOKENIZER_MODEL` if set, otherwise fall back to `EMBEDDING_MODEL`.
+- `EMBEDDING_CONNECT_TIMEOUT` / `EMBEDDING_READ_TIMEOUT` / `EMBEDDING_MAX_RETRIES`
+  (defaults `5.0` / `30.0` / `16`) are the dense embedder's HTTP budget, applied to
+  the `openai-compat` and `tei` providers (`fastembed` is in-process). Connect and
+  read are split deliberately — a blackholed endpoint fails in 5 s per attempt
+  while a slow-but-alive one still gets 30 s — and that is what makes the retry
+  count affordable. With openai's backoff (`min(0.5·2ⁿ, 8)` s, jittered downward),
+  16 retries absorb **~78–104 s** of endpoint downtime rather than failing the
+  user's upload, for a worst case of ~189 s. Left unset, Haystack substitutes
+  `timeout=30.0, max_retries=5`, which absorbs only ~13 s. The cost is bounded per
+  *ingest* rather than per batch, because `raise_on_failure=True` aborts on the
+  first failing batch; keep the worst case inside the caller's
+  `EXTERNAL_INGESTION_TIMEOUT` (900 s in the parent stack).
 - `EMBEDDING_MAX_TOKENS` (default `512`) is the served model's hard input limit
   and the ceiling both HF-aware chunking modes size against. `CHUNK_SIZE` counts
   chunk *content* only, but the embedder sends `EMBEDDING_PREFIX_DOC` + the
@@ -575,25 +595,27 @@ because they are **contracts with other services**:
 ## Supported Embedding Models
 
 | Model | Dim | Doc / query prefix | Native sparse |
-|---|---|---|---|
-| `intfloat/multilingual-e5-large` | 1024 | `passage: ` / `query: ` | — |
+| --- | --- | --- | --- |
+| `intfloat/multilingual-e5-large` | 1024 | `"passage: "` / `"query: "` | — |
 | `BAAI/bge-m3` | 1024 | none / none | yes |
 | `jinaai/jina-embeddings-v3` | 1024 | task-specific | — |
-| `nomic-ai/nomic-embed-text-v1.5` | 768 | `search_document: ` / `search_query: ` | — |
+| `nomic-ai/nomic-embed-text-v1.5` | 768 | `"search_document: "` / `"search_query: "` | — |
 
 `EMBEDDING_PROVIDER`:
+
 - `openai-compat` → `OpenAIDocumentEmbedder` (the current `embed.itkdev.dk` path)
 - `fastembed` → `FastembedDocumentEmbedder` (in-process inference; supports BGE-M3 dense)
 - `tei` → routes through `OpenAIDocumentEmbedder` (TEI exposes an OpenAI-compatible endpoint)
 
 `SPARSE_EMBEDDING_PROVIDER`:
+
 - `fastembed` → `FastembedSparseDocumentEmbedder` (BGE-M3 sparse, BM42, SPLADE family)
 - `none` → no sparse stage, dense-only pipeline
 
 ## Extraction Engines
 
 | `EXTRACTION_ENGINE` | Status | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `kreuzberg` | day-one (default) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `pypdf` | day-one | In-process, PDF-only, lightweight |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |

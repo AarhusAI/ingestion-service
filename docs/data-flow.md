@@ -7,7 +7,7 @@ configuration as actually deployed by the parent stack**.
 ## 1. Effective default configuration
 
 | Setting | Standalone default | **Effective (parent stack)** |
-|---|---|---|
+| --- | --- | --- |
 | `EXTRACTION_ENGINE` | `kreuzberg` | **`auto`** |
 | ↳ `EXTRACTION_ROUTER_DEFAULT` | `kreuzberg` | **`kreuzberg`** |
 | ↳ `EXTRACTION_ROUTER_DIAGRAM_ENGINE` | `hybrid-diagram` | **`hybrid-diagram`** |
@@ -18,7 +18,7 @@ configuration as actually deployed by the parent stack**.
 | `TOKENIZER_MODEL` / `TOKENIZER_REVISION` | _(empty → `EMBEDDING_MODEL`)_ / _(empty)_ | `intfloat/multilingual-e5-large`, pinned revision |
 | `EMBEDDING_PROVIDER` | `openai-compat` | `openai-compat` @ `https://embed.itkdev.dk/v1` |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `intfloat/multilingual-e5-large` / `1024` | same |
-| `EMBEDDING_PREFIX_DOC` | `passage: ` | `passage: ` |
+| `EMBEDDING_PREFIX_DOC` | `"passage: "` | `"passage: "` |
 | `ENABLE_SPARSE_EMBEDDINGS` | **`false`** | **`true`** |
 | `SPARSE_EMBEDDING_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions` | same |
 | `QDRANT_URI` / `QDRANT_INDEX` | `http://qdrant:6333` / `ingestion_files` | same |
@@ -30,7 +30,7 @@ where it sets nothing, the service's own defaults apply.
 Sidecars in play for the default flow:
 
 | Sidecar | Role | Used by |
-|---|---|---|
+| --- | --- | --- |
 | **MinIO** | object storage; Open WebUI stores uploaded files here | S3 fetch (JSON mode) |
 | **kreuzberg** | default text/structure extraction (HTTP sidecar) | router default route |
 | **gotenberg** | office→PDF→PNG rendering for the vision pass | hybrid-diagram route |
@@ -125,7 +125,7 @@ The `meta` dict that flows into the pipeline carries:
 ## 4. Auto-routing detail (`EXTRACTION_ENGINE=auto`)
 
 The cached pipeline has one fixed converter slot, so the per-document engine
-decision lives *inside* a routing converter. It builds one inner converter per
+decision lives _inside_ a routing converter. It builds one inner converter per
 routable engine at startup, then classifies and delegates per source.
 Classification is `.docx`-only today; everything else takes the default route.
 
@@ -161,9 +161,9 @@ classification returns the **default** route — it never raises for routing
 reasons.
 
 > **Where the profile is really chosen.** The router itself only decides
-> *engine + signal* and passes along the configured
+> _engine + signal_ and passes along the configured
 > `EXTRACTION_ROUTER_DIAGRAM_PROFILE`. The profile boxes above pair each signal
-> with the profile it *yields* in practice, because `hybrid-diagram` ignores
+> with the profile it _yields_ in practice, because `hybrid-diagram` ignores
 > the passed value on its main `.docx` path and re-inspects the file itself:
 > `diagram-topology` when the labels are native text, `figure` when they are
 > raster pixels. The configured value only bites for hybrid's empty-docx
@@ -177,8 +177,8 @@ strengths:
 - **The vision model supplies only the diagram.** Rendering goes office→PDF via
   the **Gotenberg** sidecar, then PDF→PNG locally, then a multimodal LLM
   reconstructs structure. Profile is `diagram-topology` (Mermaid graph, labels
-  grounded in the native text) for a *vector* flowchart, or `figure` (read labels
-  from pixels) for a flattened *raster* image.
+  grounded in the native text) for a _vector_ flowchart, or `figure` (read labels
+  from pixels) for a flattened _raster_ image.
 - Non-`.docx` sources fall through to the plain vision path.
 
 ---
@@ -215,6 +215,7 @@ flowchart LR
 > is the last hop before the writer in both configurations.
 
 **Chunking — the markdown chunker.** Two stages plus a merge pass:
+
 1. Split on `#`/`##`/`###` headings (heading lines stay in the content).
 2. Merge pass: sections smaller than `CHUNK_MIN_SIZE` (100) tokens absorb the
    next section while they stay under the minimum and the combined size fits
@@ -227,7 +228,7 @@ flowchart LR
 3. Token-pack only the sections that exceed the section's **effective content
    budget** using the e5-large tokenizer, with `CHUNK_OVERLAP` (80). The budget
    is `min(CHUNK_SIZE, EMBEDDING_MAX_TOKENS − prefix − breadcrumb − specials −
-   margin)`, recomputed per section: the `passage: ` prefix, this section's
+   margin)`, recomputed per section: the `"passage: "` prefix, this section's
    `headers_breadcrumb`, and the tokenizer's `<s>`/`</s>` all ride along at
    embed time but are invisible to `CHUNK_SIZE`. Two sections of identical
    length can therefore split differently — the one under a deep heading path
@@ -235,6 +236,7 @@ flowchart LR
    512-token model) is used as-is.
 
 Each output chunk's `meta` inherits the request `meta` and gains:
+
 - `headers` — outermost-first breadcrumb of the section heading hierarchy
   (`[]` outside any heading),
 - `headers_breadcrumb` — the same path joined with `" > "` (e.g.
@@ -243,7 +245,7 @@ Each output chunk's `meta` inherits the request `meta` and gains:
 - `extraction_engine` / `extraction_route` — stamped by the router upstream.
 
 **Embedding.** The dense embedder is a network call to the OpenAI-compatible
-endpoint (`embed.itkdev.dk`), applying the `passage: ` document prefix. The sparse
+endpoint (`embed.itkdev.dk`), applying the `"passage: "` document prefix. The sparse
 embedder runs the BM42 model in-process, thread-capped (`EMBEDDING_THREADS`)
 so it doesn't starve the event loop.
 
@@ -270,7 +272,7 @@ without a breadcrumb embed unchanged.
 The ingestion run wraps the pipeline with a per-`file_id` lock and a
 **versioned (blue/green) overwrite**: each run stamps a fresh
 `meta.ingest_version` onto its chunks (which also changes their content-hashed
-document IDs), so the new version is written *alongside* the old points — the
+document IDs), so the new version is written _alongside_ the old points — the
 old version is only swept after the new one fully landed, and a failed run
 tears down only its own points.
 
@@ -314,6 +316,7 @@ vectors** — a dense vector (used by the per-tenant HNSW) and a sparse vector
 (Qdrant's inverted index).
 
 **Payload indexes, created at startup:**
+
 - `meta.collection_name` — keyword index marked as the tenant key; gives each
   collection its own HNSW subgraph.
 - `meta.collection_type` — keyword index for admin queries.
@@ -358,7 +361,7 @@ Each written point's payload:
 The route layer maps pipeline exceptions to an `IngestError` code:
 
 | Failure | HTTP | `code` |
-|---|---|---|
+| --- | --- | --- |
 | Bad/missing Bearer token | 401 | _(not IngestError)_ |
 | Validation / bad bucket / collection mismatch / bad content-type | 400 / 403 / 415 | `INVALID_REQUEST` |
 | Upload or S3 object exceeds `MAX_UPLOAD_BYTES` | 413 | `INVALID_REQUEST` |
@@ -372,6 +375,6 @@ The route layer maps pipeline exceptions to an `IngestError` code:
 
 ---
 
-*Diagrams reflect the effective default configuration set by the parent
+_Diagrams reflect the effective default configuration set by the parent
 stack's `docker-compose.yml`; re-verify the config table against that file if
-the parent stack changes.*
+the parent stack changes._

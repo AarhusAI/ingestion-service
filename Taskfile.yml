@@ -24,7 +24,12 @@ tasks:
   install:
     desc: Install project dependencies (dev)
     cmds:
-      - "{{.PYTHON}} pip install '.[dev]'"
+      - "{{.PYTHON}} uv sync --frozen --extra dev"
+
+  lock:
+    desc: "Re-lock dependencies after editing pyproject.toml (task lock -- --upgrade to bump)"
+    cmds:
+      - "{{.PYTHON}} uv lock {{.CLI_ARGS}}"
 
   setup:
     desc: First-time project setup
@@ -64,6 +69,14 @@ tasks:
     cmds:
       - task: lint:check
       - task: lint:format:check
+      - task: lint:types
+      - task: lint:yaml
+      - task: lint:markdown
+
+  lint:types:
+    desc: Type-check with basedpyright (new errors only; see .basedpyright/baseline.json)
+    cmds:
+      - "{{.PYTHON}} basedpyright"
 
   lint:check:
     desc: Check code with ruff
@@ -84,6 +97,18 @@ tasks:
     desc: Check code formatting with ruff
     cmds:
       - "{{.PYTHON}} ruff format --check ."
+
+  lint:yaml:
+    desc: Check YAML formatting with prettier (as CI does)
+    cmds:
+      # Falls back to .env.example so compose's required vars (`:?`) resolve.
+      - "{{.DOCKER_COMPOSE}} $([ -f .env ] || echo --env-file .env.example) run --rm prettier '**/*.{yml,yaml}' --check"
+
+  lint:markdown:
+    desc: "Check Markdown with markdownlint (as CI does; task lint:markdown -- --fix to auto-fix)"
+    cmds:
+      # Host uid/gid so --fix can write to the bind mount.
+      - "{{.CONTAINER_RUNTIME}} run --rm --user $(id -u):$(id -g) -v ./:/md itkdev/markdownlint markdownlint '**/*.md' {{.CLI_ARGS}}"
 
   # ==========================================================================
   # Testing
@@ -128,7 +153,6 @@ tasks:
     cmds:
       - task: lint
       - task: test
-
 
   # ---------------------------------------------------------------------------
   # Build

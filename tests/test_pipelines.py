@@ -143,6 +143,46 @@ def test_build_dense_unknown():
         build_dense_embedder(s)
 
 
+def test_build_dense_sets_split_timeout_and_retries():
+    """The HTTP budget must be *ours*, not Haystack's fallback.
+
+    Haystack substitutes `timeout=30.0, max_retries=5` when these are left None
+    (`OpenAIDocumentEmbedder._client_kwargs`), which absorbed only ~13s of
+    downtime — a 2min blip on the embedding endpoint failed real uploads. The
+    split connect/read timeout is what makes a longer retry budget affordable:
+    a blackholed host costs 5s per attempt instead of 30s.
+    """
+    e = build_dense_embedder(_settings(embedding_provider="openai-compat"))
+
+    assert e.timeout.connect == 5.0
+    assert e.timeout.read == 30.0
+    assert e.max_retries == 16
+    # The values must survive Haystack's None-fallback logic all the way into
+    # the kwargs handed to the OpenAI client — that fallback was the bug.
+    kwargs = e._client_kwargs()
+    assert kwargs["max_retries"] == 16
+    assert kwargs["timeout"].connect == 5.0
+
+
+def test_build_dense_http_budget_is_configurable():
+    """Non-default values propagate (guards against hardcoded literals)."""
+    e = build_dense_embedder(
+        _settings(
+            embedding_provider="tei",
+            embedding_connect_timeout=2.5,
+            embedding_read_timeout=45.0,
+            embedding_max_retries=3,
+        )
+    )
+
+    assert e.timeout.connect == 2.5
+    assert e.timeout.read == 45.0
+    # write/pool track connect so a half-open socket can't outlive it either.
+    assert e.timeout.write == 2.5
+    assert e.timeout.pool == 2.5
+    assert e.max_retries == 3
+
+
 def test_build_dense_embeds_headers_breadcrumb_by_default():
     """EMBED_HEADERS_BREADCRUMB defaults on: the embedder prepends
     meta.headers_breadcrumb to the text it encodes (stored content untouched)."""

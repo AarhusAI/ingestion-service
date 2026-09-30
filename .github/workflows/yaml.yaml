@@ -1,0 +1,30 @@
+name: YAML
+
+on:
+  pull_request:
+    paths: &paths
+      - "**/*.yml"
+      - "**/*.yaml"
+
+  push:
+    branches:
+      - main
+      - develop
+    paths: *paths
+
+jobs:
+  yaml-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create docker network
+        run: |
+          docker network create frontend
+
+      # docker-compose.yml requires API_KEY etc. (`:?`); compose only reads .env.
+      - name: Create .env from example
+        run: cp .env.example .env
+
+      - run: |
+          docker compose run prettier '**/*.{yml,yaml}' --check

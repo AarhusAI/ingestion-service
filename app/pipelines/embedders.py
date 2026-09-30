@@ -8,6 +8,7 @@ Also holds :class:`DenseEmbeddingGuard`, the last-hop check that no chunk
 reaches Qdrant without a dense vector.
 """
 
+import httpx
 from haystack import Document, component
 
 from app.config import Settings
@@ -44,6 +45,23 @@ def build_dense_embedder(settings: Settings):
             model=settings.embedding_model,
             prefix=settings.embedding_prefix_doc,
             meta_fields_to_embed=_meta_fields_to_embed(settings),
+            # Passed explicitly because Haystack's fallback (timeout=30.0,
+            # max_retries=5) is a library default, not a decision: it absorbed
+            # only ~13s of downtime, so a ~2min blip on the embedding endpoint
+            # turned into failed uploads for the user.
+            #
+            # A Timeout object is what buys the retries: the type hint says
+            # float, but the value goes straight to OpenAI(...), which accepts
+            # float | Timeout | None — and only the object form can fail fast on
+            # connect while still waiting on read. Nothing serializes this
+            # pipeline, so to_dict()'s inability to encode it is moot.
+            timeout=httpx.Timeout(
+                connect=settings.embedding_connect_timeout,
+                read=settings.embedding_read_timeout,
+                write=settings.embedding_connect_timeout,
+                pool=settings.embedding_connect_timeout,
+            ),
+            max_retries=settings.embedding_max_retries,
             # Haystack defaults this to False, which logs a failed batch and
             # carries on — the documents come back with embedding=None and
             # Qdrant happily stores them with only their sparse vector, so the

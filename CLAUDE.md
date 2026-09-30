@@ -4,23 +4,87 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Document ingestion service for Open WebUI. A standalone FastAPI microservice that runs a Haystack v2 indexing pipeline (extract → chunk → embed → store) and writes Haystack-native documents (`content` + `meta`) to Qdrant. Sits next to `retrieval-agent/` in the parent repo and is called by Open WebUI's `EXTERNAL_INGESTION_ENGINE=external` patch via `PUT /api/v1/ingest`.
+Document ingestion service for Open WebUI. A standalone FastAPI microservice that runs a Haystack v2 indexing pipeline
+(extract → chunk → embed → store) and writes Haystack-native documents (`content` + `meta`) to Qdrant. Sits next to
+`retrieval-agent/` in the parent repo and is called by Open WebUI's `EXTERNAL_INGESTION_ENGINE=external` patch via
+`PUT /api/v1/ingest`.
 
 The pipeline is configurable end-to-end:
 
-- **Extraction**: `EXTRACTION_ENGINE` selects `pypdf`, `kreuzberg`, `docling`, `unstructured`, `vision-llm`, `hybrid-diagram`, or `auto`. The default is consistent across files: `config.py` falls back to `kreuzberg`, `.env.example` ships `kreuzberg`, and `docker-compose.yml` falls back to `auto` (`${EXTRACTION_ENGINE:-auto}`) whose router default is also `kreuzberg` — so a `cp .env.example .env` Quick Start gives you `kreuzberg`, while an unset var under compose gives `auto` (→ `kreuzberg` for ordinary docs). `kreuzberg` runs as an external HTTP sidecar (a `goldziher/kreuzberg` container in the parent stack at `KREUZBERG_URL`). `pypdf` is in-process. `pypdf` and `kreuzberg` ship in the day-one image; `docling`/`unstructured` require optional deps. The factory raises a clear `ImportError` at startup if you select an engine whose dep is missing. The `kreuzberg` branch wraps the sidecar via a custom `KreuzbergRemoteConverter` Haystack component in `app/pipelines/kreuzberg_converter.py` — no third-party Haystack integration is used, so the dependency surface stays at `httpx` (already required). `vision-llm` renders document pages to images (office formats go through the bundled **Gotenberg** sidecar for office→PDF, PDF→PNG is local) and reconstructs layout-bound structure (flowcharts, diagrams, scans) into Markdown + a Mermaid graph via an OpenAI-compatible multimodal LLM (`VISION_LLM_*`). `hybrid-diagram` pairs native docx text (verbatim from the package XML) with a vision-inferred diagram, falling through to `vision-llm` for non-docx; it picks its vision profile per document via `docx_diagram_profile` — `diagram-topology` (Mermaid only) when the labels live in Word shapes/textboxes (a *vector* flowchart), or the `figure` profile when the diagram is a flattened *raster* PNG (labels are pixels, so the model reads them from the rendered image while the prose still comes from native text). `auto` is a routing *mode* (not a converter): docx with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`), everything else → `EXTRACTION_ROUTER_DEFAULT`; detection thresholds live in `EXTRACTION_ROUTER_*` (textbox: `_MIN_TEXTBOXES`/`_DRAWING_RATIO`; raster: `_MIN_BODY_IMAGES`/`_MIN_IMAGE_EMU` display-area floor + opt-in `_MIN_IMAGE_WORD_RATIO`). The routing decision is surfaced three ways: logged at **INFO** (`routing X -> engine=… signal=…`; the detailed detector metrics stay at DEBUG), returned on the ingest response as `extraction`, and stamped onto every chunk's `meta` (`extraction_engine`/`extraction_route`) so it's queryable after the fact. `detect_engine()` is now a thin wrapper over `classify_engine()`, which returns a structured `RoutingDecision` (engine + signal + metrics). Header/footer logos never trigger the raster signal — detection reads only `word/document.xml`. The single source of truth for known engines is `KNOWN_EXTRACTION_ENGINES` in `app/config.py`.
-- **Chunking**: factory in `app/pipelines/splitter.py` picks between Haystack's `DocumentSplitter` (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units), the custom `HuggingFaceTokenizerSplitter` (`CHUNK_SPLIT_BY=token`, the default — wraps `langchain_text_splitters.RecursiveCharacterTextSplitter.from_huggingface_tokenizer` so chunk size is measured in the embedding model's actual tokens), and the structure-aware `MarkdownChunker` (`CHUNK_SPLIT_BY=markdown` — two-stage: split on `#`/`##`/`###` headings via `MarkdownHeaderTextSplitter`, merge adjacent sections smaller than `CHUNK_MIN_SIZE` tokens (default 100, `0` disables; never past `CHUNK_SIZE`, merged chunks carry the longest-common-prefix heading path), then token-pack each section that exceeds `CHUNK_SIZE`. Preserves the heading hierarchy on each chunk as `meta.headers`, plus the joined string `meta.headers_breadcrumb` — with `EMBED_HEADERS_BREADCRUMB=true` (default) all embedders prepend it via `meta_fields_to_embed`, so the vector sees `passage: Setup > Docker > Networking\n<chunk>` while stored content stays clean). Token + markdown modes fall back to `EMBEDDING_MODEL` for the tokenizer unless `TOKENIZER_MODEL` is set; `transformers` + `langchain_text_splitters` are lazy-imported so word/sentence/passage users don't pay the cost. The tokenizer is `@lru_cache`d (first load ~1–3s, then free) and shared between the two HF-aware splitters.
-- **Embed-token budget**: `CHUNK_SIZE` bounds chunk *content*, but the embedder sends `EMBEDDING_PREFIX_DOC` + `headers_breadcrumb` + content and the tokenizer wraps it in special tokens. `EMBEDDING_MAX_TOKENS` (default 512, the served model's hard limit) is the ceiling both HF-aware modes size against: the effective content budget is `min(CHUNK_SIZE, EMBEDDING_MAX_TOKENS − prefix − breadcrumb − specials − _SAFETY_MARGIN)`, floored at `_MIN_BUDGET` *inside* the `CHUNK_SIZE` bound. `MarkdownChunker` recomputes it **per section** (`_content_budget()`) because breadcrumb cost varies 1–53 tokens; a static worst-case subtraction would shrink every chunk by the deepest heading path. Both markdown stages consult it — the stage-1 passthrough *and* the stage-2 packer, whose langchain length function (`len(tokenizer.tokenize(text))`) is content-only and so equally overhead-blind. A `CHUNK_SIZE` that already fits is untouched (the documented 400 default is unchanged); a too-large one is clamped with an INFO log, never a startup failure.
-- **Dense embedding**: `EMBEDDING_PROVIDER` picks `openai-compat` (the current `embed.itkdev.dk` path), `fastembed` (in-process), or `tei` (also OpenAI-compatible at the wire level). Required. `raise_on_failure=True` is set deliberately — see the failure-mode note on oversized chunks.
-- **Sparse embedding**: `ENABLE_SPARSE_EMBEDDINGS=true` adds a `FastembedSparseDocumentEmbedder` stage so each Qdrant point holds both a dense and a sparse named vector. Optional; default off.
+- **Extraction**: `EXTRACTION_ENGINE` selects `pypdf`, `kreuzberg`, `docling`, `unstructured`, `vision-llm`,
+  `hybrid-diagram`, or `auto`. The default is consistent across files: `config.py` falls back to `kreuzberg`,
+  `.env.example` ships `kreuzberg`, and `docker-compose.yml` falls back to `auto` (`${EXTRACTION_ENGINE:-auto}`) whose
+  router default is also `kreuzberg` — so a `cp .env.example .env` Quick Start gives you `kreuzberg`, while an unset var
+  under compose gives `auto` (→ `kreuzberg` for ordinary docs). `kreuzberg` runs as an external HTTP sidecar (a
+  `goldziher/kreuzberg` container in the parent stack at `KREUZBERG_URL`). `pypdf` is in-process. `pypdf` and
+  `kreuzberg` ship in the day-one image; `docling`/`unstructured` require optional deps. The factory raises a clear
+  `ImportError` at startup if you select an engine whose dep is missing. The `kreuzberg` branch wraps the sidecar via a
+  custom `KreuzbergRemoteConverter` Haystack component in `app/pipelines/kreuzberg_converter.py` — no third-party
+  Haystack integration is used, so the dependency surface stays at `httpx` (already required). `vision-llm` renders
+  document pages to images (office formats go through the bundled **Gotenberg** sidecar for office→PDF, PDF→PNG is
+  local) and reconstructs layout-bound structure (flowcharts, diagrams, scans) into Markdown + a Mermaid graph via an
+  OpenAI-compatible multimodal LLM (`VISION_LLM_*`). `hybrid-diagram` pairs native docx text (verbatim from the package
+  XML) with a vision-inferred diagram, falling through to `vision-llm` for non-docx; it picks its vision profile per
+  document via `docx_diagram_profile` — `diagram-topology` (Mermaid only) when the labels live in Word shapes/textboxes
+  (a _vector_ flowchart), or the `figure` profile when the diagram is a flattened _raster_ PNG (labels are pixels, so
+  the model reads them from the rendered image while the prose still comes from native text). `auto` is a routing _mode_
+  (not a converter): docx with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster
+  image (a flattened diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`),
+  everything else → `EXTRACTION_ROUTER_DEFAULT`; detection thresholds live in `EXTRACTION_ROUTER_*` (textbox:
+  `_MIN_TEXTBOXES`/`_DRAWING_RATIO`; raster: `_MIN_BODY_IMAGES`/`_MIN_IMAGE_EMU` display-area floor + opt-in
+  `_MIN_IMAGE_WORD_RATIO`). The routing decision is surfaced three ways: logged at **INFO**
+  (`routing X -> engine=… signal=…`; the detailed detector metrics stay at DEBUG), returned on the ingest response as
+  `extraction`, and stamped onto every chunk's `meta` (`extraction_engine`/`extraction_route`) so it's queryable after
+  the fact. `detect_engine()` is now a thin wrapper over `classify_engine()`, which returns a structured
+  `RoutingDecision` (engine + signal + metrics). Header/footer logos never trigger the raster signal — detection reads
+  only `word/document.xml`. The single source of truth for known engines is `KNOWN_EXTRACTION_ENGINES` in
+  `app/config.py`.
+- **Chunking**: factory in `app/pipelines/splitter.py` picks between Haystack's `DocumentSplitter`
+  (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units), the custom `HuggingFaceTokenizerSplitter`
+  (`CHUNK_SPLIT_BY=token`, the default — wraps
+  `langchain_text_splitters.RecursiveCharacterTextSplitter.from_huggingface_tokenizer` so chunk size is measured in the
+  embedding model's actual tokens), and the structure-aware `MarkdownChunker` (`CHUNK_SPLIT_BY=markdown` — two-stage:
+  split on `#`/`##`/`###` headings via `MarkdownHeaderTextSplitter`, merge adjacent sections smaller than
+  `CHUNK_MIN_SIZE` tokens (default 100, `0` disables; never past `CHUNK_SIZE`, merged chunks carry the
+  longest-common-prefix heading path), then token-pack each section that exceeds `CHUNK_SIZE`. Preserves the heading
+  hierarchy on each chunk as `meta.headers`, plus the joined string `meta.headers_breadcrumb` — with
+  `EMBED_HEADERS_BREADCRUMB=true` (default) all embedders prepend it via `meta_fields_to_embed`, so the vector sees
+  `passage: Setup > Docker > Networking\n<chunk>` while stored content stays clean). Token + markdown modes fall back to
+  `EMBEDDING_MODEL` for the tokenizer unless `TOKENIZER_MODEL` is set; `transformers` + `langchain_text_splitters` are
+  lazy-imported so word/sentence/passage users don't pay the cost. The tokenizer is `@lru_cache`d (first load ~1–3s,
+  then free) and shared between the two HF-aware splitters.
+- **Embed-token budget**: `CHUNK_SIZE` bounds chunk _content_, but the embedder sends `EMBEDDING_PREFIX_DOC` +
+  `headers_breadcrumb` + content and the tokenizer wraps it in special tokens. `EMBEDDING_MAX_TOKENS` (default 512, the
+  served model's hard limit) is the ceiling both HF-aware modes size against: the effective content budget is
+  `min(CHUNK_SIZE, EMBEDDING_MAX_TOKENS − prefix − breadcrumb − specials − _SAFETY_MARGIN)`, floored at `_MIN_BUDGET`
+  _inside_ the `CHUNK_SIZE` bound. `MarkdownChunker` recomputes it **per section** (`_content_budget()`) because
+  breadcrumb cost varies 1–53 tokens; a static worst-case subtraction would shrink every chunk by the deepest heading
+  path. Both markdown stages consult it — the stage-1 passthrough _and_ the stage-2 packer, whose langchain length
+  function (`len(tokenizer.tokenize(text))`) is content-only and so equally overhead-blind. A `CHUNK_SIZE` that already
+  fits is untouched (the documented 400 default is unchanged); a too-large one is clamped with an INFO log, never a
+  startup failure.
+- **Dense embedding**: `EMBEDDING_PROVIDER` picks `openai-compat` (the current `embed.itkdev.dk` path), `fastembed`
+  (in-process), or `tei` (also OpenAI-compatible at the wire level). Required. `raise_on_failure=True` is set
+  deliberately — see the failure-mode note on oversized chunks.
+- **Sparse embedding**: `ENABLE_SPARSE_EMBEDDINGS=true` adds a `FastembedSparseDocumentEmbedder` stage so each Qdrant
+  point holds both a dense and a sparse named vector. Optional; default off.
 
 ## Build & Run
 
-The repo is **standalone** — its own `docker-compose.yml`, its own `.env`, run from the service root. The Dockerfile is multi-stage: `dev` target has test/lint tools (ruff, pytest), `prod` target is runtime-only. Compose defaults to `dev`. Python 3.12 in the container; `pyproject.toml` requires `>=3.11`.
+The repo is **standalone** — its own `docker-compose.yml`, its own `.env`, run from the service root. The Dockerfile is
+multi-stage: `dev` target has test/lint tools (ruff, pytest), `prod` target is runtime-only. Compose defaults to `dev`.
+Python 3.12 in the container; `pyproject.toml` requires `>=3.11`. Dependencies are locked in `uv.lock` and both targets
+install with `uv sync --frozen` into `/opt/venv` (outside `/app`, so the dev bind mount doesn't hide it). After editing
+`pyproject.toml`, run `task lock` and commit the lock — CI fails on `uv lock --check` otherwise. basedpyright runs in
+standard mode against `.basedpyright/baseline.json`; only new errors fail.
 
-The `frontend` Docker network is **external** — created by Traefik in the parent stack, or manually via `docker network create frontend` for standalone use. `docker compose up` fails without it (`task setup` brings the stack up with `docker compose up -d --wait` for first-time setup, but there is no `task up`/`down`/`restart`/`shell`/`logs` wrapper for day-to-day lifecycle — use `docker compose` directly for those).
+The `frontend` Docker network is **external** — created by Traefik in the parent stack, or manually via
+`docker network create frontend` for standalone use. `docker compose up` fails without it (`task setup` brings the stack
+up with `docker compose up -d --wait` for first-time setup, but there is no `task up`/`down`/`restart`/`shell`/`logs`
+wrapper for day-to-day lifecycle — use `docker compose` directly for those).
 
-All `task` commands proxy through `docker compose exec ingestion` (`Taskfile.yml:11-12`). See `README.md` for the full task catalogue. Single test or test class:
+All `task` commands proxy through `docker compose exec ingestion` (`Taskfile.yml:11-12`). See `README.md` for the full
+task catalogue. Single test or test class:
 
 ```shell
 docker compose exec ingestion pytest tests/test_ingest_endpoint.py::test_json_mode_happy_path -v
@@ -30,24 +94,59 @@ docker compose exec ingestion pytest tests/test_ingest_endpoint.py::test_json_mo
 
 FastAPI app wired in `app/main.py` (lifespan, health probes, router include). Endpoints:
 
-- **`PUT /api/v1/ingest`** — defined in `app/routes/ingest.py`. Bearer-token auth via `API_KEY` (`app/auth.py`). Single handler dispatches on `Content-Type`: `application/json` validates against `IngestRequestJSON` and fetches the file from S3, `multipart/form-data` streams the body to a tempfile. Both modes converge on `run_indexing_pipeline()`.
+- **`PUT /api/v1/ingest`** — defined in `app/routes/ingest.py`. Bearer-token auth via `API_KEY` (`app/auth.py`). Single
+  handler dispatches on `Content-Type`: `application/json` validates against `IngestRequestJSON` and fetches the file
+  from S3, `multipart/form-data` streams the body to a tempfile. Both modes converge on `run_indexing_pipeline()`.
 - **`GET /health`** — liveness probe (always 200 if the process is running).
-- **`GET /health/ready`** — readiness probe. Returns 503 until `init_pipeline()` has finished (the sparse embedder downloads ~80 MB from HuggingFace on first boot) **and** Qdrant is reachable. The pipeline-warm gate is what keeps Docker / Kubernetes from routing traffic during cold start.
-- **`GET /api/v1/documents/{file_id}/chunks`** — read-only chunk inspection (`app/routes/inspect.py`). Scrolls Qdrant by `meta.file_id` (reusing `_file_id_filter()`) and returns the stored chunks + metadata + the persisted routing decision, for answering "what got indexed, and which engine handled it." Bearer-auth; gated by `ENABLE_INSPECTION_API` (default off → 404).
-- **`DELETE /api/v1/documents/{file_id}`** — removes a file's chunks from Qdrant (`app/routes/delete.py`), the symmetric counterpart to `PUT /api/v1/ingest`. Open WebUI calls it on file deletion so vectors don't outlive the file. Delegates to `delete_by_file_id()` (run in a worker thread — it takes a lock). Idempotent: unknown/gone `file_id` → 200 with `chunks_deleted: 0`. Bearer-auth; `503 PIPELINE_FAILED` until warm, `500 DELETE_FAILED` on a Qdrant error. Counted by the `delete_requests_total{outcome,code}` metric.
-- **`GET /metrics`** — Prometheus scrape endpoint (collectors in `app/metrics.py`). Bearer-auth via the same `API_KEY` as `/api/v1/ingest` (`Depends(verify_api_key)`, mirroring retrieval-agent — scrape job sends `Authorization: Bearer <API_KEY>`); gated by `METRICS_ENABLED` (default on → 404 when off). Ingest outcomes, per-stage latency (`pipeline_stage_duration_seconds`, including the embedding bottleneck), document size, and routing-decision counters. Instrumentation is unconditional; the flag only gates exposure.
+- **`GET /health/ready`** — readiness probe. Returns 503 until `init_pipeline()` has finished (the sparse embedder
+  downloads ~80 MB from HuggingFace on first boot) **and** Qdrant is reachable. The pipeline-warm gate is what keeps
+  Docker / Kubernetes from routing traffic during cold start.
+- **`GET /api/v1/documents/{file_id}/chunks`** — read-only chunk inspection (`app/routes/inspect.py`). Scrolls Qdrant by
+  `meta.file_id` (reusing `_file_id_filter()`) and returns the stored chunks + metadata + the persisted routing
+  decision, for answering "what got indexed, and which engine handled it." Bearer-auth; gated by `ENABLE_INSPECTION_API`
+  (default off → 404).
+- **`DELETE /api/v1/documents/{file_id}`** — removes a file's chunks from Qdrant (`app/routes/delete.py`), the symmetric
+  counterpart to `PUT /api/v1/ingest`. Open WebUI calls it on file deletion so vectors don't outlive the file. Delegates
+  to `delete_by_file_id()` (run in a worker thread — it takes a lock). Idempotent: unknown/gone `file_id` → 200 with
+  `chunks_deleted: 0`. Bearer-auth; `503 PIPELINE_FAILED` until warm, `500 DELETE_FAILED` on a Qdrant error. Counted by
+  the `delete_requests_total{outcome,code}` metric.
+- **`GET /metrics`** — Prometheus scrape endpoint (collectors in `app/metrics.py`). Bearer-auth via the same `API_KEY`
+  as `/api/v1/ingest` (`Depends(verify_api_key)`, mirroring retrieval-agent — scrape job sends
+  `Authorization: Bearer <API_KEY>`); gated by `METRICS_ENABLED` (default on → 404 when off). Ingest outcomes, per-stage
+  latency (`pipeline_stage_duration_seconds`, including the embedding bottleneck), document size, and routing-decision
+  counters. Instrumentation is unconditional; the flag only gates exposure.
 
 ### Pipeline (`app/pipelines/indexing.py`)
 
-Built once at lifespan startup, cached as module-level state — Haystack pipelines aren't cheap to construct. Three pieces of behaviour worth keeping here because they aren't obvious from any single file:
+Built once at lifespan startup, cached as module-level state — Haystack pipelines aren't cheap to construct. Three
+pieces of behaviour worth keeping here because they aren't obvious from any single file:
 
-- **Idempotency via versioned (blue/green) overwrite.** Every run stamps a fresh `meta.ingest_version` (uuid) onto its chunks — which also changes their content+meta-hashed Haystack document IDs — so the new version is written *alongside* the old points, never over them. On success with `meta.overwrite=true` (default) **and** at least one chunk written, `_delete_stale_versions()` sweeps every other version of that `file_id` (a `must_not` on `meta.ingest_version` — it also matches pre-versioning points that lack the field). A zero-chunk "success" skips the sweep, so an empty extraction never replaces a good index with nothing. Retries with the same `file_id` are safe; the file stays searchable throughout a reindex (worst case: both versions visible for the moment between write and sweep). Backfill via Open WebUI's reindex action depends on this contract.
-- **Version-scoped teardown.** On any pipeline exception, `_delete_ingest_version()` removes only the failed run's own points (`file_id` + `ingest_version` must-filter). Partial writes don't reach Qdrant, and — unlike the old delete-then-write — a failed overwrite or a failed append (`overwrite=false`) leaves the previously indexed version intact. An orphaned partial version (teardown itself failed) is swept by the next successful overwrite. The route layer (`app/routes/ingest.py`) catches the re-raised exception and maps it to the `IngestError.code` field.
-- **`meta.collection_name` is the tenant key.** `QdrantDocumentStore` is configured with `hnsw_config={"m": 0, "payload_m": 16}` — multitenancy HNSW. Per-tenant subgraphs are keyed off the keyword payload index on `meta.collection_name` (created by `app/services/qdrant_setup.py` at startup). Mixing memories (short) and files (long) in one physical collection is fine because each `collection_name` gets its own subgraph.
+- **Idempotency via versioned (blue/green) overwrite.** Every run stamps a fresh `meta.ingest_version` (uuid) onto its
+  chunks — which also changes their content+meta-hashed Haystack document IDs — so the new version is written
+  _alongside_ the old points, never over them. On success with `meta.overwrite=true` (default) **and** at least one
+  chunk written, `_delete_stale_versions()` sweeps every other version per `file_id` + `collection_name` (a `must_not`
+  on `meta.ingest_version` — it also matches pre-versioning points that lack the field). Scoping by collection keeps a
+  file's copies in other collections (`file-<id>` plus each KB it belongs to) alive. A zero-chunk "success" skips the
+  sweep, so an empty extraction never replaces a good index with nothing. Retries with the same `file_id` are safe; the
+  file stays searchable throughout a reindex (worst case: both versions visible for the moment between write and sweep).
+  Backfill via Open WebUI's reindex action depends on this contract.
+- **Version-scoped teardown.** On any pipeline exception, `_delete_ingest_version()` removes only the failed run's own
+  points (`file_id` + `ingest_version` must-filter). Partial writes don't reach Qdrant, and — unlike the old
+  delete-then-write — a failed overwrite or a failed append (`overwrite=false`) leaves the previously indexed version
+  intact. An orphaned partial version (teardown itself failed) is swept by the next successful overwrite. The route
+  layer (`app/routes/ingest.py`) catches the re-raised exception and maps it to the `IngestError.code` field.
+- **`meta.collection_name` is the tenant key.** `QdrantDocumentStore` is configured with
+  `hnsw_config={"m": 0, "payload_m": 16}` — multitenancy HNSW. Per-tenant subgraphs are keyed off the keyword payload
+  index on `meta.collection_name` (created by `app/services/qdrant_setup.py` at startup). Mixing memories (short) and
+  files (long) in one physical collection is fine because each `collection_name` gets its own subgraph.
 
 ### Vector Layout
 
-With `ENABLE_SPARSE_EMBEDDINGS=true`, each Qdrant point carries two named vectors: a dense vector (used by the multitenancy HNSW) and a sparse vector (Qdrant's inverted index — no HNSW, no per-tenant subgraph; multitenancy is implicit because the same `meta.collection_name` filter applies at query time). Without sparse embeddings, only the dense named vector is written. The retrieval agent's hybrid-query path (Phase 3) detects which mode a collection is in at startup and chooses RRF fusion vs. dense-only + client-side BM25 accordingly.
+With `ENABLE_SPARSE_EMBEDDINGS=true`, each Qdrant point carries two named vectors: a dense vector (used by the
+multitenancy HNSW) and a sparse vector (Qdrant's inverted index — no HNSW, no per-tenant subgraph; multitenancy is
+implicit because the same `meta.collection_name` filter applies at query time). Without sparse embeddings, only the
+dense named vector is written. The retrieval agent's hybrid-query path (Phase 3) detects which mode a collection is in
+at startup and chooses RRF fusion vs. dense-only + client-side BM25 accordingly.
 
 ### Schema
 
@@ -83,33 +182,87 @@ Each Qdrant point's payload carries:
 }
 ```
 
-`collection_name` preserves Open WebUI's existing naming so the UI / file model don't have to change. `collection_type` is a secondary indexed field for admin queries — not used for retrieval filtering.
+`collection_name` preserves Open WebUI's existing naming so the UI / file model don't have to change. `collection_type`
+is a secondary indexed field for admin queries — not used for retrieval filtering.
 
 ### Testing
 
-Tests use `pytest-asyncio` with `asyncio_mode = "auto"`. `tests/conftest.py` sets env vars **before any `app` imports** so tests don't accidentally hit real services. External dependencies (Qdrant, S3, the Haystack pipeline) are mocked via `patch()` against the route-layer symbols, not the underlying library functions — that keeps tests fast and avoids the fastembed model download path entirely.
+Tests use `pytest-asyncio` with `asyncio_mode = "auto"`. `tests/conftest.py` sets env vars **before any `app` imports**
+so tests don't accidentally hit real services. External dependencies (Qdrant, S3, the Haystack pipeline) are mocked via
+`patch()` against the route-layer symbols, not the underlying library functions — that keeps tests fast and avoids the
+fastembed model download path entirely.
 
 ## Configuration
 
-All config via environment variables, loaded by pydantic-settings in `app/config.py`. See `.env.example` and `README.md` for the full list. The settings that matter beyond their docstrings — because they are **contracts with other systems**:
+All config via environment variables, loaded by pydantic-settings in `app/config.py`. See `.env.example` and `README.md`
+for the full list. The settings that matter beyond their docstrings — because they are **contracts with other systems**:
 
-- `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY`. In the parent stack both are forked from a single deployer-facing `INGESTION_API_KEY` (see parent `docker-compose.yml` — the two consumers read `${INGESTION_API_KEY}` from the same source so they can never drift).
-- `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PREFIX_DOC` — must match what the retrieval agent uses at query time. Indexing-time prefix is `EMBEDDING_PREFIX_DOC` (e5 needs `passage: `, bge-m3 takes none, nomic uses `search_document: `). The retrieval agent applies `EMBEDDING_PREFIX_QUERY` on the query side; the two sides must use the same model + prefix or vector search returns garbage.
-- `QDRANT_INDEX` is the physical Qdrant collection. Defaults to `ingestion_files` (distinct from Open WebUI's legacy multitenancy collections; the Phase 3 retrieval-agent rewrite will read from this collection exclusively).
-- `S3_*` env vars match boto3 conventions. The service treats whatever endpoint it's pointed at (MinIO in dev, real AWS S3 in prod, etc.) as generic S3-compatible storage.
+- `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY`. In the parent stack both are forked from a single
+  deployer-facing `INGESTION_API_KEY` (see parent `docker-compose.yml` — the two consumers read `${INGESTION_API_KEY}`
+  from the same source so they can never drift).
+- `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PREFIX_DOC` — must match what the retrieval agent uses at query time.
+  Indexing-time prefix is `EMBEDDING_PREFIX_DOC` (e5 needs `"passage: "`, bge-m3 takes none, nomic uses
+  `"search_document: "`). The retrieval agent applies `EMBEDDING_PREFIX_QUERY` on the query side; the two sides must use
+  the same model + prefix or vector search returns garbage.
+- `QDRANT_INDEX` is the physical Qdrant collection. Defaults to `ingestion_files` (distinct from Open WebUI's legacy
+  multitenancy collections; the Phase 3 retrieval-agent rewrite will read from this collection exclusively).
+- `S3_*` env vars match boto3 conventions. The service treats whatever endpoint it's pointed at (MinIO in dev, real AWS
+  S3 in prod, etc.) as generic S3-compatible storage.
 
 ## Rules
 
-- **Never read `.env` files.** They contain secrets (API keys, credentials). Use `.env.example` to understand available settings.
-- **Always run Python commands inside the Docker container.** `pip install`, `pytest`, `ruff`, and any other project commands must be executed via `docker compose exec ingestion ...` from the repo root (or via the `task` wrapper). Never install or run Python tooling on the host.
+- **Never read `.env` files.** They contain secrets (API keys, credentials). Use `.env.example` to understand available
+  settings.
+- **Always run Python commands inside the Docker container.** `uv`, `pytest`, `ruff`, `basedpyright`, and any other
+  project commands must be executed via `docker compose exec ingestion ...` from the repo root (or via the `task`
+  wrapper). Never install or run Python tooling on the host.
 
 ## Failure-mode notes
 
-- **Kreuzberg sidecar down** → `EXTRACTION_FAILED`. Open WebUI's file row goes to `failed`; the user sees the error and can retry once the sidecar is back.
-- **Vision-LLM output exceeds `VISION_LLM_MAX_TOKENS`** → `EXTRACTION_FAILED`. The converter treats a `finish_reason=length` response as a hard failure (`vision_llm_converter.py`) rather than letting silently-truncated Markdown reach Qdrant. Remedy: raise `VISION_LLM_MAX_TOKENS` (staying under the served model's `--max-model-len` input headroom) or route the document to a text engine.
-- **Embedding endpoint down** → `EMBEDDING_FAILED` (or `SPARSE_EMBEDDING_FAILED` for the sparse stage). The all-or-nothing teardown ensures no partial points reach Qdrant.
-- **Chunk exceeding the model's token limit** → `EMBEDDING_FAILED`, nothing written, previous version kept. Three layers keep this from becoming silent data loss, and all three were added because it *was* silent: (1) the `EMBEDDING_MAX_TOKENS` budget above prevents it; (2) `raise_on_failure=True` on `OpenAIDocumentEmbedder` — Haystack's default `False` logs the rejected batch and returns those documents with `embedding=None`; (3) `DenseEmbeddingGuard` (last hop before the writer) refuses to write vectorless points whatever the provider. Why (3) is needed on top of (2): the Qdrant converter *omits* the dense key when `embedding is None` instead of erroring, so with sparse embeddings on, the point lands carrying only its sparse vector — permanently invisible to dense/hybrid retrieval, while the ingest reports success and the blue/green sweep deletes the previously good version. One oversized chunk poisons the whole 32-document batch, since the endpoint rejects the entire request.
-- **Error codes and Haystack's exception wrapping**: `Pipeline._run_component` re-raises every component failure as `PipelineRuntimeError` (`raise ... from error`), so `_classify_pipeline_error` unwraps the `__cause__` chain (`_unwrap_pipeline_error`) before its `isinstance` dispatch. Without that step the typed-error layers are unreachable and codes fall through to the message-substring fallback, which only lands correctly when a component *name* happens to contain "embed"/"converter". Keep the unwrap when touching that function.
-- **Qdrant write fails** → `QDRANT_WRITE_FAILED`. Tear-down still runs even if the original error came from a partial write — `_delete_ingest_version()` swallows "collection not found" errors so the failure path is robust on cold starts, and it only touches the failed run's own version.
+- **Kreuzberg sidecar down** → `EXTRACTION_FAILED`. Open WebUI's file row goes to `failed`; the user sees the error and
+  can retry once the sidecar is back.
+- **Vision-LLM output exceeds `VISION_LLM_MAX_TOKENS`** → `EXTRACTION_FAILED`. The converter treats a
+  `finish_reason=length` response as a hard failure (`vision_llm_converter.py`) rather than letting silently-truncated
+  Markdown reach Qdrant. Remedy: raise `VISION_LLM_MAX_TOKENS` (staying under the served model's `--max-model-len` input
+  headroom) or route the document to a text engine.
+- **Embedding endpoint down** → `EMBEDDING_FAILED` (or `SPARSE_EMBEDDING_FAILED` for the sparse stage). The
+  all-or-nothing teardown ensures no partial points reach Qdrant. A _transient_ outage is absorbed first:
+  `build_dense_embedder` passes an explicit
+  `httpx.Timeout(connect=EMBEDDING_CONNECT_TIMEOUT, read=EMBEDDING_READ_TIMEOUT)` plus
+  `max_retries=EMBEDDING_MAX_RETRIES` (16), which rides out ~78–104s of downtime. Both are passed explicitly because
+  Haystack's silent fallback (`timeout=30.0, max_retries=5` in `_client_kwargs`) absorbed only ~13s — a 110s blip on
+  2026-07-30 failed 11 uploads. The split connect/read is what makes the retry count safe: one scalar would apply 30s to
+  _connect_ too, so each retry against a blackholed host would cost 30s instead of 5s (worst case ~189s at 16 retries,
+  which must stay inside the caller's 900s `EXTERNAL_INGESTION_TIMEOUT` — the vision route may already have spent
+  300s+). Retries cost is bounded per run, not per batch, because `raise_on_failure=True` aborts on the first failing
+  batch. Note openai obeys a server `Retry-After` up to 60s, so a sustained 429 storm can stall an ingest far longer
+  than the backoff table suggests.
+- **Chunk exceeding the model's token limit** → `EMBEDDING_FAILED`, nothing written, previous version kept. Three layers
+  keep this from becoming silent data loss, and all three were added because it _was_ silent: (1) the
+  `EMBEDDING_MAX_TOKENS` budget above prevents it; (2) `raise_on_failure=True` on `OpenAIDocumentEmbedder` — Haystack's
+  default `False` logs the rejected batch and returns those documents with `embedding=None`; (3) `DenseEmbeddingGuard`
+  (last hop before the writer) refuses to write vectorless points whatever the provider. Why (3) is needed on top of
+  (2): the Qdrant converter _omits_ the dense key when `embedding is None` instead of erroring, so with sparse
+  embeddings on, the point lands carrying only its sparse vector — permanently invisible to dense/hybrid retrieval,
+  while the ingest reports success and the blue/green sweep deletes the previously good version. One oversized chunk
+  poisons the whole 32-document batch, since the endpoint rejects the entire request.
+- **Error codes and Haystack's exception wrapping**: `Pipeline._run_component` re-raises every component failure as
+  `PipelineRuntimeError` (`raise ... from error`), so `_classify_pipeline_error` unwraps the `__cause__` chain
+  (`_unwrap_pipeline_error`) before its `isinstance` dispatch. Without that step the typed-error layers are unreachable
+  and codes fall through to the message-substring fallback, which only lands correctly when a component _name_ happens
+  to contain "embed"/"converter". Keep the unwrap when touching that function.
+- **Qdrant write fails** → `QDRANT_WRITE_FAILED`. Tear-down still runs even if the original error came from a partial
+  write — `_delete_ingest_version()` swallows "collection not found" errors so the failure path is robust on cold
+  starts, and it only touches the failed run's own version.
 - **S3 fetch 404 / auth** → `S3_FETCH_FAILED`. The route layer catches this before the pipeline runs.
-- **Concurrent uploads from multiple users** are handled by FastAPI / uvicorn workers (configure via `WEB_CONCURRENCY`). The ingest/extract handlers offload the blocking S3 fetch and pipeline run to worker threads via `asyncio.to_thread`, so the event loop (and the `/health` probes) stays responsive during a long ingest **as long as the pipeline doesn't saturate every CPU** — offloading to a thread doesn't help when the work pins all cores. The in-process **fastembed** embedders (the sparse BM42 model, and the dense embedder when `EMBEDDING_PROVIDER=fastembed`) run on ONNX, which defaults to grabbing all cores; left uncapped they starve the single event-loop thread and `/health` times out → Docker restarts the container. `EMBEDDING_THREADS` (default `0` = leave 2 cores free) caps the ONNX thread pool on both embedders via the `threads`/`parallel=1` args in `app/pipelines/embedders.py`, with `OMP_NUM_THREADS` as an OpenMP backstop set in the Dockerfile/compose env. The default OpenAI-compatible dense path is a network call, so it isn't CPU-bound — sparse (or fastembed dense) is the engine that needs the cap. The autouse `reset_clients` test fixture catches state leakage between tests.
+- **Concurrent uploads from multiple users** are handled by FastAPI / uvicorn workers (configure via `WEB_CONCURRENCY`).
+  The ingest/extract handlers offload the blocking S3 fetch and pipeline run to worker threads via `asyncio.to_thread`,
+  so the event loop (and the `/health` probes) stays responsive during a long ingest **as long as the pipeline doesn't
+  saturate every CPU** — offloading to a thread doesn't help when the work pins all cores. The in-process **fastembed**
+  embedders (the sparse BM42 model, and the dense embedder when `EMBEDDING_PROVIDER=fastembed`) run on ONNX, which
+  defaults to grabbing all cores; left uncapped they starve the single event-loop thread and `/health` times out →
+  Docker restarts the container. `EMBEDDING_THREADS` (default `0` = leave 2 cores free) caps the ONNX thread pool on
+  both embedders via the `threads`/`parallel=1` args in `app/pipelines/embedders.py`, with `OMP_NUM_THREADS` as an
+  OpenMP backstop set in the Dockerfile/compose env. The default OpenAI-compatible dense path is a network call, so it
+  isn't CPU-bound — sparse (or fastembed dense) is the engine that needs the cap. The autouse `reset_clients` test
+  fixture catches state leakage between tests.

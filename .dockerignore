@@ -3,6 +3,7 @@
 
 # Allow only what the Dockerfile needs
 !pyproject.toml
+!uv.lock
 !app/
 
 # Deny patterns inside allowed dirs

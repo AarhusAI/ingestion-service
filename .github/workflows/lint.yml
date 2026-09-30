@@ -1,0 +1,78 @@
+name: Python linting
+
+# Checks run in every docker compose service labelled dk.itkdev.python=true.
+# The repository variable PYTHON_SERVICES (JSON list, e.g. ["api", "worker"])
+# overrides this.
+
+on:
+  pull_request:
+    paths: &paths
+      - "**.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".basedpyright/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".github/workflows/*.yml"
+
+  push:
+    branches:
+      - main
+      - develop
+    paths: *paths
+
+jobs:
+  services:
+    name: Find Python services
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.find.outputs.list }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create .env from example
+        run: cp .env.example .env
+      - id: find
+        run: |
+          list=$(docker compose config --format json \
+            | jq -c '[.services | to_entries[] | select(.value.labels["dk.itkdev.python"] == "true") | .key]')
+          [ "$list" != "[]" ] || { echo "::error::No service has the label dk.itkdev.python=true"; exit 1; }
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint (${{ matrix.service }})
+    needs: services
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: &matrix
+        service: ${{ fromJSON(vars.PYTHON_SERVICES || needs.services.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v7
+      # docker-compose.yml requires API_KEY etc. (`:?`); compose only reads .env.
+      - name: Create .env from example
+        run: cp .env.example .env
+      - run: |
+          echo "APP_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "APP_GID=$(id -g)" >> "$GITHUB_ENV"
+          docker network create frontend
+      - run: |
+          docker compose run --rm --no-deps -T ${{ matrix.service }} ruff check --output-format=github .
+          docker compose run --rm --no-deps -T ${{ matrix.service }} ruff format --check .
+
+  types:
+    name: Types (${{ matrix.service }})
+    needs: services
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: *matrix
+    steps:
+      - uses: actions/checkout@v7
+      # docker-compose.yml requires API_KEY etc. (`:?`); compose only reads .env.
+      - name: Create .env from example
+        run: cp .env.example .env
+      - run: |
+          echo "APP_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "APP_GID=$(id -g)" >> "$GITHUB_ENV"
+          docker network create frontend
+      - run: docker compose run --rm --no-deps -T ${{ matrix.service }} basedpyright

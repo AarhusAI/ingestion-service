@@ -366,6 +366,27 @@ class Settings(BaseSettings):
     # CHUNK_SPLIT_BY=markdown (the only mode that stamps the field). Flipping
     # this changes vectors, so reindex for consistency.
     embed_headers_breadcrumb: bool = True
+    # ----- Dense embedder HTTP budget (openai-compat / tei only) -----
+    # Split connect/read deliberately: a blackholed endpoint must fail fast
+    # (connect) while a slow-but-alive one still gets time to answer (read).
+    # Haystack would otherwise apply ONE scalar to both — its fallback is
+    # timeout=30.0, max_retries=5 (see OpenAIDocumentEmbedder._client_kwargs) —
+    # which makes every retry against a dead host cost the full 30s.
+    # connect=5.0 matches every other sidecar here; the live endpoint connects
+    # in ~0.06s, so this is ~90x headroom.
+    embedding_connect_timeout: float = 5.0
+    embedding_read_timeout: float = 30.0
+    # Retries per embedding request, with openai's exponential backoff
+    # (min(0.5*2^n, 8) seconds, jittered *downward* by up to 25%).
+    #   16 retries = 17 attempts, 0.5+1+2+4+8*12 = 103.5s nominal
+    #                             -> 77.6-103.5s of downtime absorbed
+    #   worst case (blackholed host) = 17*5s connect + 103.5s ~= 189s
+    # Bounded per *run*, not per batch: raise_on_failure=True aborts on the
+    # first failing batch, so a large document can't multiply this by its
+    # batch count. Stay well inside the caller's EXTERNAL_INGESTION_TIMEOUT
+    # (900s) — extraction may already have spent 300s+ on the vision route —
+    # and note each stalled ingest holds one of ~20 worker threads meanwhile.
+    embedding_max_retries: int = 16
 
     # ----- Sparse embedder (optional) -----
     enable_sparse_embeddings: bool = False
