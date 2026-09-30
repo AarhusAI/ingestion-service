@@ -131,6 +131,9 @@ services:
     volumes:
       - ./:/app
     labels:
+      # Picked up by the lint and tests workflows.
+      - "dk.itkdev.python=true"
+      # Traefik setup
       - "traefik.enable=true"
       - "traefik.docker.network=frontend"
       - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${COMPOSE_DOMAIN}`)"
