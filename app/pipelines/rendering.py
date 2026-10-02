@@ -26,6 +26,10 @@ import httpx
 
 from app.pipelines.errors import ExtractionError
 
+# Imported for its side effect: registers the OOXML/OpenDocument mimetypes the
+# slim image lacks — Gotenberg dispatches partly on the part's Content-Type.
+from app.pipelines import kreuzberg_converter  # noqa: F401  # isort: skip
+
 log = logging.getLogger(__name__)
 
 
@@ -47,24 +51,6 @@ _OFFICE_EXTS = frozenset(
     {".docx", ".doc", ".odt", ".rtf", ".pptx", ".ppt", ".odp", ".xlsx", ".xls", ".ods"}
 )
 
-# The slim Python image's ``mimetypes`` table is missing the OOXML/OpenDocument
-# families, so register them — Gotenberg dispatches partly on the part's
-# Content-Type. Mirrors the registry in ``kreuzberg_converter.py``.
-_EXTRA_TYPES = {
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".doc": "application/msword",
-    ".xls": "application/vnd.ms-excel",
-    ".ppt": "application/vnd.ms-powerpoint",
-    ".odt": "application/vnd.oasis.opendocument.text",
-    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
-    ".odp": "application/vnd.oasis.opendocument.presentation",
-    ".rtf": "application/rtf",
-}
-for _ext, _ct in _EXTRA_TYPES.items():
-    mimetypes.add_type(_ct, _ext)
-
 
 def office_to_pdf(
     path: str,
@@ -81,12 +67,7 @@ def office_to_pdf(
     Split ``httpx.Timeout`` so a stalled sidecar fails fast on connect.
     """
     p = Path(path)
-    timeout = httpx.Timeout(
-        connect=connect_timeout,
-        read=read_timeout,
-        write=connect_timeout,
-        pool=connect_timeout,
-    )
+    timeout = httpx.Timeout(connect_timeout, read=read_timeout)
     url = gotenberg_url.rstrip("/") + "/forms/libreoffice/convert"
     content_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
     try:

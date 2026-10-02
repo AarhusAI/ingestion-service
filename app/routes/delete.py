@@ -21,7 +21,7 @@ from app.auth import verify_api_key
 from app.log_utils import sanitize_for_log
 from app.models import DeleteResponse, IngestError
 from app.pipelines.indexing import delete_by_file_id, is_pipeline_ready
-from app.routes.ingest import _safe_error_detail
+from app.routes.ingest import _http_error, _safe_error_detail
 
 log = logging.getLogger(__name__)
 
@@ -45,12 +45,7 @@ async def delete_document(
         # matches the inspection endpoint and keeps the collection guaranteed to
         # exist (qdrant_setup runs in the same lifespan as init_pipeline).
         metrics.delete_requests_total.labels(outcome="error", code="PIPELINE_FAILED").inc()
-        raise HTTPException(
-            status_code=503,
-            detail=IngestError(
-                error="pipeline not warmed up yet", code="PIPELINE_FAILED"
-            ).model_dump(),
-        )
+        raise _http_error(503, "pipeline not warmed up yet", code="PIPELINE_FAILED")
 
     try:
         # delete_by_file_id acquires a threading.Lock, so it MUST run in a worker

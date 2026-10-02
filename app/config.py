@@ -1,6 +1,6 @@
 import os
 
-from pydantic import field_validator, model_validator
+from pydantic import ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # Minimum length enforced on ``API_KEY``. The bearer is a shared static
@@ -115,24 +115,17 @@ class Settings(BaseSettings):
     # either way.
     enable_inspection_api: bool = False
 
-    @field_validator("log_level")
+    @field_validator("log_level", "log_level_app")
     @classmethod
-    def _validate_log_level(cls, v: str) -> str:
+    def _validate_log_level(cls, v: str, info: ValidationInfo) -> str:
         allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if info.field_name == "log_level_app":
+            allowed.add("")  # empty = inherit the root level
         upper = v.upper()
         if upper not in allowed:
-            raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}; got {v!r}")
-        return upper
-
-    @field_validator("log_level_app")
-    @classmethod
-    def _validate_log_level_app(cls, v: str) -> str:
-        if not v:
-            return ""
-        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        upper = v.upper()
-        if upper not in allowed:
-            raise ValueError(f"LOG_LEVEL_APP must be one of {sorted(allowed)} or empty; got {v!r}")
+            raise ValueError(
+                f"{(info.field_name or '').upper()} must be one of {sorted(allowed)}; got {v!r}"
+            )
         return upper
 
     @field_validator("log_format")
@@ -357,9 +350,6 @@ class Settings(BaseSettings):
     embedding_max_tokens: int = 512
     # Required by the model card. e5: "passage: " on docs, "query: " on queries; bge-m3 takes none.
     embedding_prefix_doc: str = "passage: "
-    # Not used at indexing time; kept here so the contract is documented in one
-    # place and the retrieval agent's prefix can be sanity-checked against ours.
-    embedding_prefix_query: str = "query: "
     # Prepend the section-heading breadcrumb (meta.headers_breadcrumb, e.g.
     # "Setup > Docker > Networking") to the text the embedders see — stored
     # chunk content is untouched. Only has an effect with

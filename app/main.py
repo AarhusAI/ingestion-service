@@ -28,31 +28,6 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting ingestion service")
-    log.info("Qdrant URI: %s (index=%s)", settings.qdrant_uri, settings.qdrant_index)
-    log.info(
-        "Extraction engine: %s (kreuzberg_url=%s)",
-        settings.extraction_engine,
-        settings.kreuzberg_url,
-    )
-    log.info(
-        "Dense embedder: provider=%s model=%s dim=%s",
-        settings.embedding_provider,
-        settings.embedding_model,
-        settings.embedding_dim,
-    )
-    log.info(
-        "Sparse embeddings: %s (provider=%s model=%s)",
-        settings.enable_sparse_embeddings,
-        settings.sparse_embedding_provider,
-        settings.sparse_embedding_model,
-    )
-    log.info(
-        "Chunking: split_by=%s size=%d overlap=%d",
-        settings.chunk_split_by,
-        settings.chunk_size,
-        settings.chunk_overlap,
-    )
-
     if not settings.allowed_buckets:
         log.warning(
             "S3_ALLOWED_BUCKETS is empty — any bucket the configured S3 credentials "
@@ -118,14 +93,3 @@ async def health_ready():
             content={"status": "error", "detail": "qdrant unreachable"},
         )
     return {"status": "ok"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        "app.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=True,
-    )

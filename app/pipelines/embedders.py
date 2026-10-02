@@ -56,10 +56,7 @@ def build_dense_embedder(settings: Settings):
             # connect while still waiting on read. Nothing serializes this
             # pipeline, so to_dict()'s inability to encode it is moot.
             timeout=httpx.Timeout(
-                connect=settings.embedding_connect_timeout,
-                read=settings.embedding_read_timeout,
-                write=settings.embedding_connect_timeout,
-                pool=settings.embedding_connect_timeout,
+                settings.embedding_connect_timeout, read=settings.embedding_read_timeout
             ),
             max_retries=settings.embedding_max_retries,
             # Haystack defaults this to False, which logs a failed batch and

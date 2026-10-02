@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 from haystack import Document, component
 
+from app.pipelines.converters import meta_for
 from app.pipelines.errors import ExtractionError
 
 log = logging.getLogger(__name__)
@@ -81,12 +82,7 @@ class KreuzbergRemoteConverter:
         # Split timeout — connect fails fast so a stalled sidecar doesn't
         # tie up a worker for the full read window. Write/pool reuse the
         # connect value: nothing about the upload is read-shaped.
-        self._timeout = httpx.Timeout(
-            connect=connect_timeout,
-            read=read_timeout,
-            write=connect_timeout,
-            pool=connect_timeout,
-        )
+        self._timeout = httpx.Timeout(connect_timeout, read=read_timeout)
         self._verify = verify
         # One pooled client for the component's lifetime — the converter is a
         # process-lifetime singleton, so sidecar connections are reused instead
@@ -102,7 +98,7 @@ class KreuzbergRemoteConverter:
         docs: list[Document] = []
         for i, source in enumerate(sources):
             path = Path(source)
-            request_meta = _meta_for(meta, i)
+            request_meta = meta_for(meta, i)
             # Kreuzberg dispatches on the multipart part's Content-Type rather
             # than sniffing the bytes. Sending ``application/octet-stream`` for
             # everything trips ``UnsupportedFormatError`` server-side, so guess
@@ -134,16 +130,6 @@ class KreuzbergRemoteConverter:
         return {"documents": docs}
 
 
-def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:
-    """Match Haystack convention: ``meta`` may be a single dict applied to all
-    sources, a per-source list, or omitted entirely."""
-    if meta is None:
-        return {}
-    if isinstance(meta, list):
-        return dict(meta[i]) if i < len(meta) else {}
-    return dict(meta)
-
-
 def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
     """Build the chunk-source text from a Kreuzberg ``/extract`` response.
 
@@ -165,10 +151,9 @@ def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
       those merely duplicate the body, so we drop them. ``min_table_columns=1``
       restores the pre-gate keep-all behaviour.
 
-    Defensive against shape drift: accepts a bare object as well as the
-    canonical array, and returns the empty string if nothing usable is in the
-    payload. Empty content does NOT fail the ingest — it flows through to a
-    successful zero-chunk write — so the warning here (plus the zero-chunk
+    Returns the empty string if nothing usable is in the payload. Empty
+    content does NOT fail the ingest — it flows through to a successful
+    zero-chunk write — so the warning here (plus the zero-chunk
     warning in ``indexing.py``) is the operator's signal that the sidecar's
     response shape drifted.
     """
@@ -188,23 +173,10 @@ def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
 
 
 def _first_result(payload: object) -> dict | None:
-    """Pull the single ExtractionResult dict from a Kreuzberg response.
-
-    The shipping shape is a one-element JSON array. The bare-object branch
-    keeps us tolerant of older / variant builds that returned just the dict,
-    matching the previous ``_content_from_payload`` fallback semantics.
-    """
-    if isinstance(payload, list):
-        if not payload:
-            return None
-        first = payload[0]
-        return first if isinstance(first, dict) else None
-    if isinstance(payload, dict):
-        if "content" in payload:
-            return payload
-        inner = payload.get("result")
-        if isinstance(inner, dict):
-            return inner
+    """The single ExtractionResult dict from a Kreuzberg 4.0.x response — a
+    one-element JSON array (we upload one source per request)."""
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
     return None
 
 

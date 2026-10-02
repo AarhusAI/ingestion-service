@@ -108,8 +108,3 @@ def _tidy_lines(lines: list[str]) -> list[str]:
         out.append(line)
         i += 1
     return out
-
-
-def extract_docx_text(source: str) -> str:
-    """The ``.docx`` text as a single newline-joined block (see ``extract_docx_lines``)."""
-    return "\n".join(extract_docx_lines(source))

@@ -1,6 +1,6 @@
 """RoutingConverter delegation (app/pipelines/routing_converter.py).
 
-``build_converter`` and ``detect_engine`` are patched at the module symbol so no
+``build_converter`` and ``classify_engine`` are patched at the module symbol so no
 real converter is constructed and the routing decision is forced per test.
 """
 

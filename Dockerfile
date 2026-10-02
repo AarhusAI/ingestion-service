@@ -27,6 +27,23 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 
+# Create appuser BEFORE installing dependencies so the venv is built as that
+# user. A `chown -R /opt/venv` after the fact would rewrite every file into a
+# second multi-GB layer (slow build, slow "exporting layers"). Every chown
+# below is non-recursive and runs on an empty directory, so it is instant.
+#  - /opt/venv: owned by appuser so `task install` can re-sync the venv inside
+#    the container.
+#  - /app: owned by appuser so ruff/pytest can create cache dirs there.
+#  - /cache: HuggingFace + fastembed model cache mount point. Docker's
+#    named-volume first-mount semantics copy this directory's ownership into
+#    the volume, so creating it as appuser here is what lets the non-root
+#    uvicorn process write the BM42 + tokenizer caches inside the volume.
+RUN addgroup --gid ${APP_GID} appuser \
+ && adduser --disabled-password --gecos "" --no-create-home \
+      --uid ${APP_UID} --ingroup appuser appuser \
+ && mkdir -p /opt/venv /cache/hf /cache/fastembed \
+ && chown appuser:appuser /app /opt/venv /cache /cache/hf /cache/fastembed
+
 # Dependencies come from uv.lock, so dev and prod install exactly what CI tested.
 # The venv lives outside /app because the dev bind mount (./:/app) would hide it.
 COPY --from=ghcr.io/astral-sh/uv:0.9.30 /uv /usr/local/bin/uv
@@ -36,42 +53,24 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_CACHE_DIR=/tmp/uv-cache \
     PATH=/opt/venv/bin:$PATH
 
-COPY pyproject.toml uv.lock ./
+# Everything from here on runs as appuser. Anything that needs root (apt-get,
+# etc.) must go above this line.
+USER appuser
+
+COPY --chown=appuser:appuser pyproject.toml uv.lock ./
 
 # --- Dev target: includes test/lint tools ---
 FROM base AS dev
-ARG APP_UID
-ARG APP_GID
 RUN uv sync --frozen --no-cache --no-install-project --extra dev
-COPY app/ app/
-RUN addgroup --system --gid ${APP_GID} appuser \
- && adduser --system --no-create-home --uid ${APP_UID} --ingroup appuser appuser \
- # Owned by appuser so `task install` can re-sync the venv inside the container.
- && chown -R appuser:appuser /opt/venv \
- # /cache is the HuggingFace + fastembed model cache mount point. Docker's
- # named-volume first-mount semantics copy this directory's ownership into
- # the volume, so creating it as appuser here is what lets the non-root
- # uvicorn process write the BM42 + tokenizer caches inside the volume.
- && mkdir -p /cache/hf /cache/fastembed \
- && chown -R appuser:appuser /cache
-USER appuser
+COPY --chown=appuser:appuser app/ app/
 EXPOSE 8000
 HEALTHCHECK CMD curl -f http://localhost:8000/health || exit 1
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # --- Prod target: runtime deps only ---
 FROM base AS prod
-ARG APP_UID
-ARG APP_GID
 RUN uv sync --frozen --no-cache --no-install-project
-COPY app/ app/
-RUN addgroup --system --gid ${APP_GID} appuser \
- && adduser --system --no-create-home --uid ${APP_UID} --ingroup appuser appuser \
- # See dev-target comment — same ownership setup is required in prod for
- # the named model-cache volume to be writable by the non-root user.
- && mkdir -p /cache/hf /cache/fastembed \
- && chown -R appuser:appuser /cache
-USER appuser
+COPY --chown=appuser:appuser app/ app/
 EXPOSE 8000
 HEALTHCHECK CMD curl -f http://localhost:8000/health || exit 1
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
