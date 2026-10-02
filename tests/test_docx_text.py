@@ -6,7 +6,7 @@ substring/regex extraction is exercised end-to-end without a sample binary.
 
 import zipfile
 
-from app.pipelines.docx_text import extract_docx_lines, extract_docx_text
+from app.pipelines.docx_text import extract_docx_lines
 
 _NS = 'xmlns:w="w" xmlns:mc="mc" xmlns:wps="wps" xmlns:v="v"'
 
@@ -136,11 +136,6 @@ def test_non_dash_bullet_glyph_is_normalised(tmp_path):
 def test_trailing_lone_marker_is_dropped(tmp_path):
     body = _para(_run("Beslutning")) + _para(_run("-"))
     assert extract_docx_lines(_docx(tmp_path, body)) == ["Beslutning"]
-
-
-def test_extract_docx_text_is_newline_joined(tmp_path):
-    body = _para(_run("A")) + _para(_run("B")) + _para(_run("C"))
-    assert extract_docx_text(_docx(tmp_path, body)) == "A\nB\nC"
 
 
 def test_non_docx_file_returns_empty_list(tmp_path):

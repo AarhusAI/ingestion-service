@@ -35,10 +35,9 @@ The pipeline is configurable end-to-end:
   `_MIN_IMAGE_WORD_RATIO`). The routing decision is surfaced three ways: logged at **INFO**
   (`routing X -> engine=… signal=…`; the detailed detector metrics stay at DEBUG), returned on the ingest response as
   `extraction`, and stamped onto every chunk's `meta` (`extraction_engine`/`extraction_route`) so it's queryable after
-  the fact. `detect_engine()` is now a thin wrapper over `classify_engine()`, which returns a structured
-  `RoutingDecision` (engine + signal + metrics). Header/footer logos never trigger the raster signal — detection reads
-  only `word/document.xml`. The single source of truth for known engines is `KNOWN_EXTRACTION_ENGINES` in
-  `app/config.py`.
+  the fact. `classify_engine()` returns a structured `RoutingDecision` (engine + signal + metrics). Header/footer logos
+  never trigger the raster signal — detection reads only `word/document.xml`. The single source of truth for known
+  engines is `KNOWN_EXTRACTION_ENGINES` in `app/config.py`.
 - **Chunking**: factory in `app/pipelines/splitter.py` picks between Haystack's `DocumentSplitter`
   (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units), the custom `HuggingFaceTokenizerSplitter`
   (`CHUNK_SPLIT_BY=token`, the default — wraps

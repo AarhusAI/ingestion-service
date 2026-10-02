@@ -41,6 +41,18 @@ class Profile:
     user: str
 
 
+# One worked example shared by every Mermaid-emitting prompt — a 4-bit model
+# drifts from long multi-part schemas, so the example pins the node/edge syntax.
+_MERMAID_EXAMPLE = (
+    "```mermaid\n"
+    "flowchart TD\n"
+    '  n1["Modtag ansøgning"] --> n2["Opret sag"]\n'
+    '  n2 -->|Ja| n3["Bevilling"]\n'
+    '  n2 -->|Nej| n4["Afslag"]\n'
+    "```\n\n"
+)
+
+
 # --------------------------------------------------------------------------
 # diagram (default behaviour of the original engine)
 # --------------------------------------------------------------------------
@@ -58,8 +70,7 @@ def _diagram_system(language_hint: str) -> str:
     )
 
 
-# Terse, concrete scaffold with one worked example — a 4-bit model drifts from
-# long multi-part schemas, so the example pins the node/edge syntax.
+# Terse, concrete scaffold plus the shared worked example.
 _DIAGRAM_USER = (
     "Reconstruct this document as Markdown, following this structure exactly:\n"
     "1. Start with `# <title>` if a title is visible.\n"
@@ -69,13 +80,8 @@ _DIAGRAM_USER = (
     "arrows). Render a decision as `- <question>? -> Yes: ... / No: ...`.\n"
     "5. After the prose, output exactly one fenced mermaid block under "
     "`## Procesdiagram (Mermaid)`, like this:\n\n"
-    "```mermaid\n"
-    "flowchart TD\n"
-    '  n1["Modtag ansøgning"] --> n2["Opret sag"]\n'
-    '  n2 -->|Ja| n3["Bevilling"]\n'
-    '  n2 -->|Nej| n4["Afslag"]\n'
-    "```\n\n"
-    "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
+    + _MERMAID_EXAMPLE
+    + "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
     "quotes; one edge per arrow; decision branches use `-->|label|`; group each swim-lane with "
     '`subgraph "Lane name" ... end`. Output Markdown only.'
 )
@@ -102,13 +108,8 @@ def _diagram_topology_system(language_hint: str) -> str:
 # the hybrid converter supplies the prose from native text and wants only the graph.
 _DIAGRAM_TOPOLOGY_USER = (
     "Output exactly one fenced mermaid block and nothing else, like this:\n\n"
-    "```mermaid\n"
-    "flowchart TD\n"
-    '  n1["Modtag ansøgning"] --> n2["Opret sag"]\n'
-    '  n2 -->|Ja| n3["Bevilling"]\n'
-    '  n2 -->|Nej| n4["Afslag"]\n'
-    "```\n\n"
-    "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
+    + _MERMAID_EXAMPLE
+    + "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
     "quotes; one edge per arrow following its direction; decision branches use `-->|label|`; "
     'group each swim-lane with `subgraph "Lane name" ... end`. Output only the mermaid block.'
 )
@@ -164,13 +165,8 @@ _FIGURE_USER = (
     "shows flow or a cycle, give it a short `## <figure title>` heading (if one is visible) "
     "followed by exactly one fenced mermaid block under `## Procesdiagram (Mermaid)`, like this:"
     "\n\n"
-    "```mermaid\n"
-    "flowchart TD\n"
-    '  n1["Modtag ansøgning"] --> n2["Opret sag"]\n'
-    '  n2 -->|Ja| n3["Bevilling"]\n'
-    '  n2 -->|Nej| n4["Afslag"]\n'
-    "```\n\n"
-    "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
+    + _MERMAID_EXAMPLE
+    + "Mermaid rules: one node per box with a stable id (n1, n2, …) and its label in double "
     "quotes; one edge per arrow following its direction; decision branches use `-->|label|`; "
     'group each lane/actor region with `subgraph "Lane name" ... end`. If there is no figure, '
     "output nothing."

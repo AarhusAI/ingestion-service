@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ## [Unreleased]
 
 - Added actions and linted code base.
+- Removed duplicated helpers, unreachable fallbacks and unused error classes/settings from `app/` (~400 lines).
 
 ## [0.0.8] - 2026-09-24
 

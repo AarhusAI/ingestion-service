@@ -6,7 +6,9 @@ prod, etc.) as generic S3-compatible storage. boto3 is configured with
 ``S3_REGION`` from settings.
 """
 
+import contextlib
 import logging
+import os
 import tempfile
 from functools import lru_cache
 
@@ -19,9 +21,6 @@ from app.log_utils import sanitize_for_log
 from app.services.filenames import safe_suffix
 
 log = logging.getLogger(__name__)
-
-
-__all__ = ["S3ObjectTooLarge", "fetch_object_to_tempfile", "reset_client"]
 
 
 @lru_cache(maxsize=1)
@@ -82,19 +81,13 @@ def fetch_object_to_tempfile(bucket: str, key: str) -> str:
     )
     try:
         _client().download_fileobj(bucket, key, fh)
-        fh.flush()
-        return fh.name
     except Exception:
         fh.close()
-        try:
-            import os
-
+        with contextlib.suppress(OSError):
             os.unlink(fh.name)
-        except OSError:
-            pass
         raise
-    finally:
-        fh.close()
+    fh.close()
+    return fh.name
 
 
 def reset_client() -> None:

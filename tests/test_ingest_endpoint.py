@@ -708,18 +708,11 @@ async def test_knowledge_collection_passes_through(client, api_headers, tmp_path
 
 def test_classify_dispatches_on_typed_errors():
     """Typed errors from app.pipelines.errors win over message-substring matching."""
-    from app.pipelines.errors import (
-        EmbeddingError,
-        ExtractionError,
-        QdrantWriteError,
-        SparseEmbeddingError,
-    )
+    from app.pipelines.errors import EmbeddingError, ExtractionError
     from app.routes.ingest import _classify_pipeline_error
 
     assert _classify_pipeline_error(ExtractionError("any text")) == "EXTRACTION_FAILED"
     assert _classify_pipeline_error(EmbeddingError("any text")) == "EMBEDDING_FAILED"
-    assert _classify_pipeline_error(SparseEmbeddingError("any text")) == "SPARSE_EMBEDDING_FAILED"
-    assert _classify_pipeline_error(QdrantWriteError("any text")) == "QDRANT_WRITE_FAILED"
 
 
 def test_classify_dispatches_on_pypdf_real_class():
@@ -792,8 +785,6 @@ def _wrap_in_pipeline_error(exc: Exception, component: str = "dense_embedder") -
     [
         ("ExtractionError", "EXTRACTION_FAILED"),
         ("EmbeddingError", "EMBEDDING_FAILED"),
-        ("SparseEmbeddingError", "SPARSE_EMBEDDING_FAILED"),
-        ("QdrantWriteError", "QDRANT_WRITE_FAILED"),
     ],
 )
 def test_classify_unwraps_haystack_pipeline_error(error_name, expected):

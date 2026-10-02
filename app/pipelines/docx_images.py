@@ -31,6 +31,7 @@ from pathlib import Path
 from app.config import Settings
 from app.log_utils import sanitize_for_log
 from app.pipelines.detectors import _EXTENT_RE
+from app.pipelines.docx_text import _FALLBACK_RE
 
 log = logging.getLogger(__name__)
 
@@ -38,9 +39,6 @@ log = logging.getLogger(__name__)
 # ``vision_llm_max_pages`` bounds the page render; truncation is logged, never silent.
 _MAX_FIGURES = 8
 
-# Legacy VML mirror of each DrawingML shape lives in <mc:Fallback>; drop it so a
-# raster figure isn't considered twice (mirrors ``docx_text._FALLBACK_RE``).
-_FALLBACK_RE = re.compile(r"<mc:Fallback>.*?</mc:Fallback>", re.DOTALL)
 # One DrawingML drawing block (inline or anchored). Drawings don't nest drawings,
 # so a non-greedy match is safe.
 _DRAWING_RE = re.compile(r"<w:drawing\b.*?</w:drawing>", re.DOTALL)

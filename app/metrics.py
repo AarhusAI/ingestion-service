@@ -12,11 +12,7 @@ the per-request worker threads that run the shared cached pipeline.
 
 from __future__ import annotations
 
-import logging
-
 from prometheus_client import Counter, Histogram
-
-log = logging.getLogger(__name__)
 
 # Ingest requests by outcome. ``code`` is "none" on success, else the
 # IngestError.code from the failure response (EXTRACTION_FAILED,
@@ -94,20 +90,15 @@ pipeline_stage_duration_seconds = Histogram(
 def instrument_stage(component, stage: str):
     """Wrap ``component.run`` to record per-stage latency, then return it.
 
-    Best-effort: Haystack reads a component's input/output sockets from the
-    *instance* (set at class-decoration time), not from the ``run`` callable,
-    so overriding the bound method here doesn't disturb pipeline wiring. If
-    wrapping fails for any reason we return the component untouched — metrics
-    are never worth breaking the ingest path.
+    Haystack reads a component's input/output sockets from the *instance* (set
+    at class-decoration time), not from the ``run`` callable, so overriding the
+    bound method here doesn't disturb pipeline wiring.
     """
-    try:
-        original = component.run
+    original = component.run
 
-        def timed(*args, **kwargs):
-            with pipeline_stage_duration_seconds.labels(stage=stage).time():
-                return original(*args, **kwargs)
+    def timed(*args, **kwargs):
+        with pipeline_stage_duration_seconds.labels(stage=stage).time():
+            return original(*args, **kwargs)
 
-        component.run = timed
-    except Exception:  # pragma: no cover - defensive; never break the pipeline
-        log.debug("could not instrument stage %r for timing", stage, exc_info=True)
+    component.run = timed
     return component
