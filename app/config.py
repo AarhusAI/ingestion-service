@@ -16,7 +16,7 @@ API_KEY_MIN_LENGTH = 32
 # default/diagram engines against this set. Kept here (not in Settings) so both
 # the validator and the factory can reference one source of truth.
 KNOWN_EXTRACTION_ENGINES = frozenset(
-    {"pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram"}
+    {"pypdf", "docling", "unstructured", "kreuzberg", "vision-llm", "hybrid-diagram", "csv"}
 )
 
 
@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 100 * 1024 * 1024
 
     # ----- Extraction -----
-    # pypdf | docling | unstructured | kreuzberg | vision-llm | auto
+    # pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram | csv | auto
     # kreuzberg runs as an external HTTP sidecar; the rest are in-process.
     # docling/unstructured require optional deps not bundled by default.
     # vision-llm renders pages and reconstructs structure via a multimodal LLM.

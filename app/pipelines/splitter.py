@@ -28,12 +28,15 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from haystack import Document, component
 from haystack.components.preprocessors import DocumentSplitter
 
 from app.config import Settings
+
+if TYPE_CHECKING:
+    from langchain_text_splitters import TextSplitter
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +100,11 @@ def _budget(chunk_size: int, max_tokens: int, overhead: int) -> int:
     return min(chunk_size, max(_MIN_BUDGET, max_tokens - overhead - _SAFETY_MARGIN))
 
 
+def _is_csv(doc: Document) -> bool:
+    """Row-serialized CSV from ``CsvConverter``: split only at row boundaries."""
+    return (doc.meta or {}).get("extraction_engine") == "csv"
+
+
 @component
 class HuggingFaceTokenizerSplitter:
     """Recursive char splitter that measures length in HuggingFace tokens.
@@ -143,6 +151,13 @@ class HuggingFaceTokenizerSplitter:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
+        # CSV docs (rows as ``col: value`` blocks joined by blank lines): zero
+        # overlap — it would only duplicate whole rows into the next chunk.
+        self._csv_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+            tokenizer,
+            chunk_size=chunk_size,
+            chunk_overlap=0,
+        )
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
@@ -152,7 +167,8 @@ class HuggingFaceTokenizerSplitter:
             if not text.strip():
                 continue
             base_meta = dict(doc.meta or {})
-            for i, piece in enumerate(self._splitter.split_text(text)):
+            splitter = self._csv_splitter if _is_csv(doc) else self._splitter
+            for i, piece in enumerate(splitter.split_text(text)):
                 if not piece:
                     continue
                 out.append(Document(content=piece, meta={**base_meta, "split_id": i}))
@@ -224,10 +240,10 @@ class MarkdownChunker:
         self._fixed_overhead = (
             _fixed_embed_overhead(tokenizer, embedding_prefix) if max_tokens else 0
         )
-        # Stage-2 splitters, keyed by content budget. The budget varies per
-        # section (the breadcrumb does), and building one is just a closure
-        # around the tokenizer — cheap enough to memoize rather than share.
-        self._splitters: dict[int, object] = {}
+        # Stage-2 splitters, keyed by (content budget, overlap). The budget
+        # varies per section (the breadcrumb does), and building one is just a
+        # closure around the tokenizer — cheap enough to memoize rather than share.
+        self._splitters: dict[tuple[int, int], TextSplitter] = {}
         # Stage-2 trigger uses the same tokenizer the embedding model uses,
         # so "would this section blow the model's context window?" is the
         # real question being answered.
@@ -264,17 +280,18 @@ class MarkdownChunker:
             cost = len(self._tokenizer.encode(breadcrumb + "\n", add_special_tokens=False))
         return _budget(self._chunk_size, self._max_tokens, self._fixed_overhead + cost)
 
-    def _splitter_for(self, budget: int):
+    def _splitter_for(self, budget: int, overlap: int):
         """Memoized stage-2 recursive splitter for a given content budget."""
-        if budget not in self._splitters:
-            self._splitters[budget] = self._recursive_cls.from_huggingface_tokenizer(
+        key = (budget, overlap)
+        if key not in self._splitters:
+            self._splitters[key] = self._recursive_cls.from_huggingface_tokenizer(
                 self._tokenizer,
                 # langchain's length function counts content only, so the
                 # budget passes through unadjusted.
                 chunk_size=budget,
-                chunk_overlap=min(self._chunk_overlap, budget // 2),
+                chunk_overlap=min(overlap, budget // 2),
             )
-        return self._splitters[budget]
+        return self._splitters[key]
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
@@ -285,6 +302,22 @@ class MarkdownChunker:
             if not text.strip():
                 continue
             base_meta = dict(doc.meta or {})
+
+            # CSV: no headings, and stage 1 would rejoin lines with "  \n",
+            # breaking the "\n\n" row boundaries. Pack rows directly, no overlap.
+            if _is_csv(doc):
+                budget = self._content_budget("")
+                for piece in self._splitter_for(budget, 0).split_text(text):
+                    if not piece:
+                        continue
+                    out.append(
+                        Document(
+                            content=piece,
+                            meta={**base_meta, "headers": [], "split_id": global_idx},
+                        )
+                    )
+                    global_idx += 1
+                continue
 
             # Stage 1: header split. Without headings this returns one
             # Document with the full text and empty metadata, which then
@@ -319,7 +352,9 @@ class MarkdownChunker:
                     global_idx += 1
                     continue
 
-                for piece in self._splitter_for(budget).split_text(piece_text):
+                for piece in self._splitter_for(budget, self._chunk_overlap).split_text(
+                    piece_text
+                ):
                     if not piece:
                         continue
                     out.append(

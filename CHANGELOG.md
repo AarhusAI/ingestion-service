@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Kreuzberg responses with an unrecognized shape now fail with `EXTRACTION_FAILED` instead of silently indexing zero
   chunks.
 - Docker: prod venv and code are root-owned (read-only to `appuser`); image build no longer runs a recursive `chown`.
+- New in-process `csv` extraction engine: each `.csv`/`.tsv` row becomes `column: value` lines, so every chunk keeps
+  its column names. `auto` routes `.csv`/`.tsv` to it. Token and markdown splitters cut CSV documents only between
+  rows, with no overlap.
 
 ## [0.0.8] - 2026-09-24
 

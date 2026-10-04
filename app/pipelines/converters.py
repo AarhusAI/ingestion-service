@@ -111,8 +111,14 @@ def build_converter(settings: Settings, engine_override: str | None = None):
 
         return HybridDiagramConverter(settings)
 
+    if engine == "csv":
+        # In-process stdlib csv; rows serialized as ``column: value`` blocks.
+        from app.pipelines.csv_converter import CsvConverter
+
+        return CsvConverter()
+
     raise ValueError(
         f"Unknown EXTRACTION_ENGINE={engine!r} "
         "(supported: pypdf | docling | unstructured | kreuzberg | "
-        "vision-llm | hybrid-diagram)"
+        "vision-llm | hybrid-diagram | csv)"
     )

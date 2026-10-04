@@ -49,7 +49,8 @@ class RoutingDecision:
     ``engine`` is the engine to route to, or ``None`` to mean "use the router's
     default" (detectors don't know the router's default engine). ``signal`` is
     which heuristic fired — ``"textbox"`` (vector flowchart), ``"raster"``
-    (large embedded figure), or ``"default"`` (neither). ``metrics`` carries the
+    (large embedded figure), ``"csv"`` (``.csv``/``.tsv`` extension), or
+    ``"default"`` (none). ``metrics`` carries the
     measured numbers behind the decision (textbox/body-word counts, ratio,
     image area …) so "why this engine" is inspectable downstream.
     """
@@ -107,6 +108,8 @@ def classify_engine(source: str, settings: Settings) -> RoutingDecision:
     ``"default"`` decision so the caller falls back safely.
     """
     ext = Path(source).suffix.lower()
+    if ext in (".csv", ".tsv"):
+        return RoutingDecision(engine="csv", signal="csv")
     if ext == ".docx":
         return _classify_docx(source, settings)
     # PDF hook (future: scanned/image-ratio detection). Everything else passes

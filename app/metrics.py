@@ -68,7 +68,7 @@ ingest_document_bytes = Histogram(
 )
 
 # Auto-routing decisions: which engine each document was routed to, and the
-# signal that triggered it (textbox | raster | default).
+# signal that triggered it (textbox | raster | csv | default).
 extraction_route_total = Counter(
     "extraction_route_total",
     "Auto-routing engine decisions by chosen engine and trigger signal.",
