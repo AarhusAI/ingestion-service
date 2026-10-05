@@ -60,8 +60,6 @@ def configure_logging(settings: Settings) -> None:
       inherits the root level.
     - ``LOG_FORMAT`` picks the text (human) or json (aggregator) formatter.
     """
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
-
     handler = logging.StreamHandler()
     if settings.log_format.lower() == "json":
         handler.setFormatter(JsonFormatter())
@@ -73,13 +71,9 @@ def configure_logging(settings: Settings) -> None:
     for existing in list(root.handlers):
         root.removeHandler(existing)
     root.addHandler(handler)
-    root.setLevel(level)
+    root.setLevel(settings.log_level)
 
     # Per-namespace override: make our own code (``app.*``) verbose while
     # leaving third-party loggers at the root level (no httpx/boto3 flood).
     # Empty LOG_LEVEL_APP → NOTSET → inherit the root level.
-    app_logger = logging.getLogger("app")
-    if settings.log_level_app:
-        app_logger.setLevel(getattr(logging, settings.log_level_app, logging.NOTSET))
-    else:
-        app_logger.setLevel(logging.NOTSET)
+    logging.getLogger("app").setLevel(settings.log_level_app or logging.NOTSET)

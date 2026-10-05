@@ -30,7 +30,7 @@ from app.pipelines.indexing import (
     is_pipeline_ready,
     scroll_chunks_by_file_id,
 )
-from app.routes.ingest import _safe_error_detail
+from app.routes.ingest import _http_error, _safe_error_detail
 
 log = logging.getLogger(__name__)
 
@@ -68,28 +68,11 @@ async def get_document_chunks(
     if not settings.enable_inspection_api:
         # 404 (not 403) so a disabled endpoint is indistinguishable from one
         # that doesn't exist — no signal that the feature is merely off.
-        raise HTTPException(
-            status_code=404,
-            detail=IngestError(
-                error="chunk inspection API is disabled (set ENABLE_INSPECTION_API=true)",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
+        raise _http_error(404, "chunk inspection API is disabled (set ENABLE_INSPECTION_API=true)")
     if include_content not in _CONTENT_MODES:
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(
-                error=f"include_content must be one of {', '.join(_CONTENT_MODES)}",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
+        raise _http_error(400, f"include_content must be one of {', '.join(_CONTENT_MODES)}")
     if not is_pipeline_ready():
-        raise HTTPException(
-            status_code=503,
-            detail=IngestError(
-                error="pipeline not warmed up yet", code="PIPELINE_FAILED"
-            ).model_dump(),
-        )
+        raise _http_error(503, "pipeline not warmed up yet", code="PIPELINE_FAILED")
 
     try:
         total = count_chunks_by_file_id(file_id)

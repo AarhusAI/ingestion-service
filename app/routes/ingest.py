@@ -19,13 +19,18 @@ import tempfile
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from haystack.core.errors import PipelineRuntimeError
+from openai import OpenAIError
 from pydantic import ValidationError
+from pypdf.errors import PyPdfError
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from app import metrics
 from app.auth import verify_api_key
 from app.config import settings
 from app.log_utils import sanitize_for_log
-from app.models import ExtractionInfo, IngestError, IngestRequestJSON, IngestResponse
+from app.models import ErrorCode, ExtractionInfo, IngestError, IngestRequestJSON, IngestResponse
+from app.pipelines.errors import EmbeddingError, ExtractionError
 from app.pipelines.indexing import run_indexing_pipeline
 from app.services.filenames import safe_suffix
 from app.services.s3 import S3ObjectTooLarge, fetch_object_to_tempfile
@@ -66,10 +71,7 @@ async def _ingest_impl(request: Request) -> IngestResponse:
         try:
             body = IngestRequestJSON.model_validate_json(await request.body())
         except ValidationError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
-            ) from exc
+            raise _http_error(400, str(exc)) from exc
         _check_bucket_allowed(body.s3_bucket)
         # boto3 is synchronous — offload so a slow S3 fetch doesn't stall the
         # event loop (and with it the /health probes).
@@ -79,13 +81,10 @@ async def _ingest_impl(request: Request) -> IngestResponse:
         form = await request.form()
         local_path, meta = await _read_multipart(form)
     else:
-        raise HTTPException(
-            status_code=415,
-            detail=IngestError(
-                error=f"Unsupported Content-Type: {content_type!r}; "
-                "use application/json or multipart/form-data",
-                code="INVALID_REQUEST",
-            ).model_dump(),
+        raise _http_error(
+            415,
+            f"Unsupported Content-Type: {content_type!r}; "
+            "use application/json or multipart/form-data",
         )
 
     try:
@@ -127,16 +126,8 @@ def _check_bucket_allowed(bucket: str) -> None:
     gap is visible.
     """
     allowed = settings.allowed_buckets
-    if not allowed:
-        return
-    if bucket not in allowed:
-        raise HTTPException(
-            status_code=403,
-            detail=IngestError(
-                error=f"S3 bucket {bucket!r} is not in S3_ALLOWED_BUCKETS",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
+    if allowed and bucket not in allowed:
+        raise _http_error(403, f"S3 bucket {bucket!r} is not in S3_ALLOWED_BUCKETS")
 
 
 def _fetch_from_s3(bucket: str, key: str) -> str:
@@ -150,10 +141,7 @@ def _fetch_from_s3(bucket: str, key: str) -> str:
             sanitize_for_log(key),
             exc,
         )
-        raise HTTPException(
-            status_code=413,
-            detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
-        ) from exc
+        raise _http_error(413, str(exc)) from exc
     except Exception as exc:
         log.exception(
             "S3 fetch failed for s3://%s/%s",
@@ -195,15 +183,10 @@ async def stream_upload_to_tempfile(upload) -> str:
                 fh.close()
                 with contextlib.suppress(OSError):
                     os.unlink(fh.name)
-                raise HTTPException(
-                    status_code=413,
-                    detail=IngestError(
-                        error=(
-                            f"upload exceeds max_upload_bytes={max_bytes} "
-                            "(configure via MAX_UPLOAD_BYTES)"
-                        ),
-                        code="INVALID_REQUEST",
-                    ).model_dump(),
+                raise _http_error(
+                    413,
+                    f"upload exceeds max_upload_bytes={max_bytes} "
+                    "(configure via MAX_UPLOAD_BYTES)",
                 )
             fh.write(chunk)
         fh.flush()
@@ -216,13 +199,7 @@ async def stream_upload_to_tempfile(upload) -> str:
 async def _read_multipart(form) -> tuple[str, dict[str, Any]]:
     upload = form.get("file")
     if upload is None:
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(
-                error="multipart request missing 'file' field",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
+        raise _http_error(400, "multipart request missing 'file' field")
     path = await stream_upload_to_tempfile(upload)
 
     meta = {
@@ -254,13 +231,7 @@ def _meta_from_request(body: IngestRequestJSON) -> dict[str, Any]:
 def _required_form(form, key: str) -> str:
     value = form.get(key)
     if value is None or not str(value).strip():
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(
-                error=f"multipart request missing required field {key!r}",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
+        raise _http_error(400, f"multipart request missing required field {key!r}")
     return str(value).strip()
 
 
@@ -282,13 +253,10 @@ def _form_bool(value: Any) -> bool:
         return True
     if lowered in _FORM_FALSE:
         return False
-    raise HTTPException(
-        status_code=400,
-        detail=IngestError(
-            error=f"invalid boolean form value {value!r} "
-            f"(use one of: {' | '.join(sorted(_FORM_TRUE | _FORM_FALSE))})",
-            code="INVALID_REQUEST",
-        ).model_dump(),
+    raise _http_error(
+        400,
+        f"invalid boolean form value {value!r} "
+        f"(use one of: {' | '.join(sorted(_FORM_TRUE | _FORM_FALSE))})",
     )
 
 
@@ -310,33 +278,12 @@ def _validate_collection_binding(meta: dict[str, Any]) -> None:
     can't be verified without an Open WebUI API call and are passed through.
     """
     collection_name = meta.get("collection_name", "")
-    user_id = meta.get("user_id", "")
-    file_id = meta.get("file_id", "")
-
-    if collection_name.startswith("user-memory-"):
-        expected = f"user-memory-{user_id}"
-        if collection_name != expected:
-            raise HTTPException(
-                status_code=403,
-                detail=IngestError(
-                    error=(
-                        f"collection_name {collection_name!r} not authorized "
-                        f"for user_id={user_id!r}"
-                    ),
-                    code="INVALID_REQUEST",
-                ).model_dump(),
-            )
-    elif collection_name.startswith("file-"):
-        expected = f"file-{file_id}"
-        if collection_name != expected:
-            raise HTTPException(
-                status_code=403,
-                detail=IngestError(
-                    error=(
-                        f"collection_name {collection_name!r} does not match file_id={file_id!r}"
-                    ),
-                    code="INVALID_REQUEST",
-                ).model_dump(),
+    for prefix, owner_field in (("user-memory-", "user_id"), ("file-", "file_id")):
+        owner = meta.get(owner_field, "")
+        if collection_name.startswith(prefix) and collection_name != f"{prefix}{owner}":
+            raise _http_error(
+                403,
+                f"collection_name {collection_name!r} does not match {owner_field}={owner!r}",
             )
 
 
@@ -412,13 +359,22 @@ def _safe_error_detail(code: str, exc: Exception) -> dict:
     return IngestError(error=message, code=code).model_dump()
 
 
+def _http_error(
+    status_code: int, error: str, code: ErrorCode = "INVALID_REQUEST"
+) -> HTTPException:
+    """An ``HTTPException`` carrying an ``IngestError`` body — raise the result."""
+    return HTTPException(
+        status_code=status_code, detail=IngestError(error=error, code=code).model_dump()
+    )
+
+
 def _classify_pipeline_error(exc: Exception) -> str:
     """Map a pipeline exception to an ``IngestError.code``.
 
     Dispatch order:
     1. Our own typed errors (``ExtractionError`` etc. from
        ``app.pipelines.errors``) — preferred, used by components we control.
-    2. Known third-party exception classes via lazy ``isinstance`` checks —
+    2. Known third-party exception classes via ``isinstance`` —
        covers pypdf, openai, and qdrant_client failures accurately.
     3. Substring matching on the message — best-effort fallback for
        Haystack-internal failures that surface as generic ``Exception``.
@@ -439,33 +395,15 @@ def _classify_pipeline_error(exc: Exception) -> str:
     only by accident of layer 3 matching component *names* ("converter",
     "dense_embedder") in the wrapper's message.
     """
-    from app.pipelines.errors import (
-        EmbeddingError,
-        ExtractionError,
-        QdrantWriteError,
-        SparseEmbeddingError,
-    )
-
     exc = _unwrap_pipeline_error(exc)
 
-    # 1. Typed errors from components we control.
-    if isinstance(exc, ExtractionError):
+    # 1. Typed errors from components we control; 2. known library types.
+    if isinstance(exc, ExtractionError | PyPdfError):
         return "EXTRACTION_FAILED"
-    if isinstance(exc, SparseEmbeddingError):
-        return "SPARSE_EMBEDDING_FAILED"
-    if isinstance(exc, EmbeddingError):
+    if isinstance(exc, EmbeddingError | OpenAIError):
         return "EMBEDDING_FAILED"
-    if isinstance(exc, QdrantWriteError):
+    if isinstance(exc, UnexpectedResponse):
         return "QDRANT_WRITE_FAILED"
-
-    # 2. Known library exception types (lazy-imported so a missing optional
-    #    dep can't break the classifier).
-    if _is_pypdf_error(exc):
-        return "EXTRACTION_FAILED"
-    if _is_qdrant_error(exc):
-        return "QDRANT_WRITE_FAILED"
-    if _is_openai_error(exc):
-        return "EMBEDDING_FAILED"
 
     # 3. Substring fallback. Sparse must be checked before the generic
     #    embed branch, otherwise sparse failures get mis-labeled.
@@ -490,11 +428,6 @@ def _unwrap_pipeline_error(exc: Exception) -> Exception:
     falls back to whatever it has if a wrapper carries no cause (then layer 3's
     substring matching still applies to the wrapper message).
     """
-    try:
-        from haystack.core.errors import PipelineRuntimeError
-    except ImportError:  # pragma: no cover - haystack is a hard dependency
-        return exc
-
     seen: set[int] = set()
     while isinstance(exc, PipelineRuntimeError) and exc.__cause__ is not None:
         seen.add(id(exc))
@@ -502,27 +435,3 @@ def _unwrap_pipeline_error(exc: Exception) -> Exception:
             break
         exc = exc.__cause__
     return exc
-
-
-def _is_pypdf_error(exc: Exception) -> bool:
-    try:
-        from pypdf.errors import PyPdfError
-    except ImportError:
-        return False
-    return isinstance(exc, PyPdfError)
-
-
-def _is_openai_error(exc: Exception) -> bool:
-    try:
-        from openai import OpenAIError
-    except ImportError:
-        return False
-    return isinstance(exc, OpenAIError)
-
-
-def _is_qdrant_error(exc: Exception) -> bool:
-    try:
-        from qdrant_client.http.exceptions import UnexpectedResponse
-    except ImportError:
-        return False
-    return isinstance(exc, UnexpectedResponse)

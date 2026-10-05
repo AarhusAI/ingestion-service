@@ -80,18 +80,6 @@ def test_run_meta_none(tmp_source):
 
 
 @respx.mock
-def test_run_object_payload_fallback(tmp_source):
-    """Defensive against shape drift: a bare object (not an array) with a
-    top-level ``content`` field is still accepted."""
-    respx.post("http://fake-kreuzberg:8000/extract").respond(200, json={"content": "object-shape"})
-
-    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
-    out = c.run(sources=[tmp_source])["documents"]
-
-    assert out[0].content == "object-shape"
-
-
-@respx.mock
 def test_run_sends_correct_mime_type_per_extension(tmp_path):
     """Kreuzberg dispatches on the multipart Content-Type, not file bytes.
     Sending ``application/octet-stream`` for a PDF trips ``UnsupportedFormatError``
@@ -196,6 +184,7 @@ def test_factory_threads_timeout_and_verify_settings_through(monkeypatch):
     monkeypatch.setattr(settings, "kreuzberg_tls_verify", False)
 
     c = build_converter(settings, engine_override="kreuzberg")
+    assert isinstance(c, KreuzbergRemoteConverter)
     assert c._timeout.connect == 7.5
     assert c._timeout.read == 90.0
     assert c._verify is False
@@ -574,17 +563,35 @@ def test_content_tables_only_no_body(tmp_source):
 
 
 @respx.mock
-def test_unusable_payload_yields_empty_content_with_warning(tmp_source, caplog):
-    """A response with no usable extraction result (shape drift) becomes an
-    empty Document — and logs a warning, since the ingest will otherwise
-    "succeed" with zero chunks and nothing else flags the drift."""
-    import logging
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["not-a-dict"],
+        [],
+        {"content": "bare-object"},
+        {"result": {"content": "wrapped"}},
+        [{"error": "no content field"}],
+    ],
+)
+def test_unrecognized_payload_shape_raises_extraction_error(tmp_source, payload):
+    """Shape drift must fail the ingest (EXTRACTION_FAILED), not succeed with
+    zero chunks and leave the document silently unsearchable."""
+    from app.pipelines.errors import ExtractionError
 
-    respx.post("http://fake-kreuzberg:8000/extract").respond(200, json=["not-a-dict"])
+    respx.post("http://fake-kreuzberg:8000/extract").respond(200, json=payload)
 
     c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
-    with caplog.at_level(logging.WARNING, logger="app.pipelines.kreuzberg_converter"):
-        out = c.run(sources=[tmp_source])["documents"]
+    with pytest.raises(ExtractionError, match="unrecognized response shape"):
+        c.run(sources=[tmp_source])
+
+
+@respx.mock
+def test_empty_content_is_an_empty_document_not_an_error(tmp_source):
+    """A well-formed result with empty content is a genuinely empty document:
+    it yields an empty Document rather than raising."""
+    respx.post("http://fake-kreuzberg:8000/extract").respond(200, json=[{"content": ""}])
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    out = c.run(sources=[tmp_source])["documents"]
 
     assert out[0].content == ""
-    assert any("no usable extraction result" in r.message for r in caplog.records)

@@ -45,7 +45,8 @@ from haystack import Document, component
 
 from app.config import Settings
 from app.log_utils import sanitize_for_log
-from app.pipelines.converters import build_converter
+from app.pipelines.converters import build_converter, meta_for
+from app.pipelines.detectors import _PROFILE_RASTER as _FIGURE_PROFILE
 from app.pipelines.detectors import docx_diagram_profile
 from app.pipelines.docx_images import extract_docx_figure_images
 from app.pipelines.docx_text import extract_docx_lines
@@ -57,12 +58,6 @@ log = logging.getLogger(__name__)
 # vision, which can at least OCR whatever is on the page.
 _MIN_NATIVE_LINES = 3
 
-# Vision profile for a docx whose diagram is drawn as Word shapes (labels are in
-# native text): graph only, no prose (the prose comes from native text).
-_TOPOLOGY_PROFILE = "diagram-topology"
-# Vision profile for a docx whose diagram is a flattened raster image (labels are
-# pixels): render only that embedded figure, ignoring the prose (also native).
-_FIGURE_PROFILE = "figure"
 # Fallback profile for non-docx sources / empty native text.
 _DEFAULT_FALLBACK_PROFILE = "diagram"
 
@@ -106,7 +101,7 @@ class HybridDiagramConverter:
         docs: list[Document] = []
         for i, source in enumerate(sources):
             name = sanitize_for_log(Path(source).name)
-            source_meta = _meta_for(meta, i)
+            source_meta = meta_for(meta, i)
             is_docx = Path(source).suffix.lower() == ".docx"
             lines = extract_docx_lines(source) if is_docx else []
             if len(lines) >= _MIN_NATIVE_LINES:
@@ -207,13 +202,3 @@ def _diagram_section(vision_content: str, pass_profile: str) -> str:
         log.debug("vision topology output had no mermaid fence; omitting diagram section")
         return ""
     return f"{_MERMAID_HEADING}\n\n{match.group(0)}"
-
-
-def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:
-    """Match Haystack convention: ``meta`` may be a single dict applied to all
-    sources, a per-source list, or omitted entirely."""
-    if meta is None:
-        return {}
-    if isinstance(meta, list):
-        return dict(meta[i]) if i < len(meta) else {}
-    return dict(meta)

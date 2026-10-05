@@ -8,7 +8,7 @@ import logging
 import zipfile
 
 from app.config import Settings
-from app.pipelines.detectors import classify_engine, detect_engine, docx_diagram_profile
+from app.pipelines.detectors import classify_engine, docx_diagram_profile
 
 
 def _settings(**overrides) -> Settings:
@@ -58,35 +58,35 @@ def test_diagram_heavy_docx_routes_to_vision(tmp_path):
     # 50 text boxes, 5 body words → 50 ≥ 20 and 50/6 ≈ 8.3 ≥ 2.0.
     xml = f"<w:document><w:body>{_textboxes(50)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=5)
-    assert detect_engine(src, _settings()) == "vision-llm"
+    assert classify_engine(src, _settings()).engine == "vision-llm"
 
 
 def test_diagram_engine_name_comes_from_settings(tmp_path):
     xml = f"<w:document><w:body>{_textboxes(50)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=5)
     s = _settings(extraction_router_diagram_engine="docling")
-    assert detect_engine(src, s) == "docling"
+    assert classify_engine(src, s).engine == "docling"
 
 
 def test_ordinary_prose_docx_passes_through(tmp_path):
     body = "<w:p><w:r><w:t>lots of normal prose</w:t></w:r></w:p>"
     xml = f"<w:document><w:body>{body}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=4000)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_few_textboxes_below_floor_passes_through(tmp_path):
     # 10 < EXTRACTION_ROUTER_MIN_TEXTBOXES (20) — never routes regardless of ratio.
     xml = f"<w:document><w:body>{_textboxes(10)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_many_textboxes_but_large_body_passes_through(tmp_path):
     # 50 ≥ 20 but ratio 50/1001 ≈ 0.05 < 2.0 — a normal report with some diagrams.
     xml = f"<w:document><w:body>{_textboxes(50)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1000)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_vml_and_wps_textboxes_are_counted(tmp_path):
@@ -98,7 +98,7 @@ def test_vml_and_wps_textboxes_are_counted(tmp_path):
         + "</w:body></w:document>"
     )
     src = _write_docx(tmp_path, xml, app_words=2)
-    assert detect_engine(src, _settings()) == "vision-llm"
+    assert classify_engine(src, _settings()).engine == "vision-llm"
 
 
 def test_missing_app_xml_uses_body_word_fallback(tmp_path):
@@ -109,14 +109,14 @@ def test_missing_app_xml_uses_body_word_fallback(tmp_path):
         "<w:p><w:r><w:t>one two</w:t></w:r></w:p>" + _textboxes(30) + "</w:body></w:document>"
     )
     src = _write_docx(tmp_path, xml, app_words=None)
-    assert detect_engine(src, _settings()) == "vision-llm"
+    assert classify_engine(src, _settings()).engine == "vision-llm"
 
 
 def test_debug_logs_routing_signal(tmp_path, caplog):
     xml = f"<w:document><w:body>{_textboxes(50)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=5, name="Diagram.docx")
     with caplog.at_level(logging.DEBUG, logger="app.pipelines.detectors"):
-        detect_engine(src, _settings())
+        classify_engine(src, _settings())
     assert "docx routing Diagram.docx: textboxes=50 body_words=5 ratio=8.33" in caplog.text
     assert "-> vision-llm" in caplog.text
 
@@ -124,12 +124,12 @@ def test_debug_logs_routing_signal(tmp_path, caplog):
 def test_malformed_zip_returns_none(tmp_path):
     p = tmp_path / "broken.docx"
     p.write_bytes(b"this is not a zip file")
-    assert detect_engine(str(p), _settings()) is None
+    assert classify_engine(str(p), _settings()).engine is None
 
 
 def test_non_docx_returns_none():
-    assert detect_engine("/nonexistent/report.pdf", _settings()) is None
-    assert detect_engine("notes.txt", _settings()) is None
+    assert classify_engine("/nonexistent/report.pdf", _settings()).engine is None
+    assert classify_engine("notes.txt", _settings()).engine is None
 
 
 # ----- Raster-image signal (second trigger for the diagram route) -----
@@ -139,20 +139,20 @@ def test_large_body_raster_image_routes_to_diagram_engine(tmp_path):
     # One big figure, no textboxes, lots of prose → the raster signal fires.
     xml = f"<w:document><w:body>{_image_drawing(*_REAL_DIAGRAM)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1536)
-    assert detect_engine(src, _settings()) == "vision-llm"
+    assert classify_engine(src, _settings()).engine == "vision-llm"
 
 
 def test_small_logo_image_passes_through(tmp_path):
     # A logo-sized image (~0.087 in²) is below the area floor → default.
     xml = f"<w:document><w:body>{_image_drawing(*_LOGO_BANNER)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1536)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_tiny_icon_below_area_floor_passes_through(tmp_path):
     xml = f"<w:document><w:body>{_image_drawing(150000, 150000)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1536)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_many_small_icons_do_not_sum(tmp_path):
@@ -160,14 +160,14 @@ def test_many_small_icons_do_not_sum(tmp_path):
     body = _image_drawing(200000, 200000) * 10
     xml = f"<w:document><w:body>{body}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1536)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_no_body_images_passes_through(tmp_path):
     body = "<w:p><w:r><w:t>just ordinary prose</w:t></w:r></w:p>"
     xml = f"<w:document><w:body>{body}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1536)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_effect_extent_not_mistaken_for_real_extent(tmp_path):
@@ -182,7 +182,7 @@ def test_effect_extent_not_mistaken_for_real_extent(tmp_path):
     )
     xml = f"<w:document><w:body>{drawing}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=10)
-    assert detect_engine(src, _settings()) is None
+    assert classify_engine(src, _settings()).engine is None
 
 
 def test_textbox_signal_takes_priority_over_raster(tmp_path):
@@ -191,23 +191,23 @@ def test_textbox_signal_takes_priority_over_raster(tmp_path):
     body = _textboxes(50) + _image_drawing(*_REAL_DIAGRAM)
     xml = f"<w:document><w:body>{body}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=5)
-    assert detect_engine(src, _settings()) == "vision-llm"
+    assert classify_engine(src, _settings()).engine == "vision-llm"
 
 
 def test_optional_word_ratio_gate_rejects_prose_heavy_image(tmp_path):
     # area 3.56e12 / (5000+1) ≈ 7.1e8: a gate above that rejects; default 0 keeps.
     xml = f"<w:document><w:body>{_image_drawing(*_REAL_DIAGRAM)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=5000)
-    assert detect_engine(src, _settings()) == "vision-llm"  # gate disabled by default
+    assert classify_engine(src, _settings()).engine == "vision-llm"  # gate disabled by default
     strict = _settings(extraction_router_min_image_word_ratio=1e9)
-    assert detect_engine(src, strict) is None
+    assert classify_engine(src, strict).engine is None
 
 
 def test_raster_debug_logs_routing_signal(tmp_path, caplog):
     xml = f"<w:document><w:body>{_image_drawing(*_REAL_DIAGRAM)}</w:body></w:document>"
     src = _write_docx(tmp_path, xml, app_words=1536, name="Wheel.docx")
     with caplog.at_level(logging.DEBUG, logger="app.pipelines.detectors"):
-        detect_engine(src, _settings())
+        classify_engine(src, _settings())
     assert "docx routing Wheel.docx: images=1" in caplog.text
     assert "-> vision-llm" in caplog.text
 

@@ -30,6 +30,7 @@ import httpx
 from haystack import Document, component
 
 from app.log_utils import sanitize_for_log
+from app.pipelines.converters import meta_for
 from app.pipelines.errors import ExtractionError
 from app.pipelines.rendering import render_to_pngs
 from app.pipelines.vision_profiles import KNOWN_PROFILES, get_profile
@@ -76,17 +77,11 @@ class VisionLLMConverter:
         # Split timeout — connect fails fast so a stalled endpoint doesn't tie up
         # a worker for the full read window; read is long because a quantized VLM
         # reasoning over several page images is slow.
-        self._timeout = httpx.Timeout(
-            connect=connect_timeout,
-            read=read_timeout,
-            write=connect_timeout,
-            pool=connect_timeout,
-        )
-        self._verify = tls_verify
+        timeout = httpx.Timeout(connect_timeout, read=read_timeout)
         # One pooled client for the component's lifetime — the converter is a
         # process-lifetime singleton, so connections to the VLM endpoint are
         # reused instead of paying a TCP(+TLS) handshake per document.
-        self._client = httpx.Client(timeout=self._timeout, verify=self._verify)
+        self._client = httpx.Client(timeout=timeout, verify=tls_verify)
         self._dpi = dpi
         self._max_pages = max_pages
         self._max_tokens = max_tokens
@@ -112,21 +107,12 @@ class VisionLLMConverter:
         # to a single-source call (how the hybrid converter uses it) and, because
         # there is no figure to "miss", an empty model response is then treated as
         # "no figure found" rather than a fatal error.
-        # Defensive: an unknown profile (e.g. a future detector returning a name
-        # not in the registry) falls back to the default rather than crashing.
         profile_name = profile or self._default_profile
-        if profile_name not in KNOWN_PROFILES:
-            log.warning(
-                "unknown vision-llm profile %r; falling back to %s",
-                profile_name,
-                self._default_profile,
-            )
-            profile_name = self._default_profile
 
         docs: list[Document] = []
         for i, source in enumerate(sources):
             path = Path(source)
-            request_meta = _meta_for(meta, i)
+            request_meta = meta_for(meta, i)
 
             if images_override:
                 # Caller supplied the images (e.g. the docx figure, extracted at
@@ -256,47 +242,27 @@ def _grounding_prompt(grounding: str) -> str:
     )
 
 
-def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:
-    """Match Haystack convention: ``meta`` may be a single dict applied to all
-    sources, a per-source list, or omitted entirely."""
-    if meta is None:
+def _first_choice(body: object) -> dict:
+    """``choices[0]`` from an OpenAI-shaped body, or ``{}`` on any shape drift.
+
+    Callers treat an empty result as empty content / no finish_reason, so a
+    malformed body becomes a clean ``ExtractionError`` rather than a crash.
+    """
+    try:
+        choice = body["choices"][0]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError):
         return {}
-    if isinstance(meta, list):
-        return dict(meta[i]) if i < len(meta) else {}
-    return dict(meta)
+    return choice if isinstance(choice, dict) else {}
 
 
 def _content_from_response(body: object) -> str:
-    """Pull ``choices[0].message.content`` defensively from an OpenAI-shaped body.
-
-    Returns the empty string for any unexpected shape — the caller treats empty
-    content as a failed extraction. Never raises on shape drift.
-    """
-    if not isinstance(body, dict):
-        return ""
-    choices = body.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
+    """``choices[0].message.content``, or ``""`` for any unexpected shape."""
+    content = (_first_choice(body).get("message") or {}).get("content")
     return content if isinstance(content, str) else ""
 
 
 def _finish_reason_from_response(body: object) -> str | None:
-    """``choices[0].finish_reason`` from an OpenAI-shaped body, or ``None`` on drift.
-
-    A missing/None finish_reason yields ``None`` (no truncation raised), so servers
-    that omit the field stay tolerated.
-    """
-    if not isinstance(body, dict):
-        return None
-    choices = body.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        return None
-    finish_reason = choices[0].get("finish_reason")
+    """``choices[0].finish_reason``, or ``None`` when absent (servers that omit
+    the field are tolerated — no truncation raised)."""
+    finish_reason = _first_choice(body).get("finish_reason")
     return finish_reason if isinstance(finish_reason, str) else None

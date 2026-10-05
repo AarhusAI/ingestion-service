@@ -106,17 +106,9 @@ def test_unknown_default_profile_raises_at_construction():
         _conv(default_profile="banana")
 
 
-def test_unknown_run_profile_falls_back_to_default():
-    # Defensive: an unknown profile at run() must not crash; it uses the default.
-    with (
-        patch(_RENDER, return_value=[b"png"]),
-        patch(_POST, return_value=_ok_response()) as post,
-    ):
-        out = _conv(default_profile="ocr").run(sources=["f.docx"], meta=None, profile="banana")[
-            "documents"
-        ]
-    assert out[0].meta["vision_profile"] == "ocr"
-    assert "ocr" in _system_text(post).lower() or "scan" in _system_text(post).lower()
+def test_unknown_run_profile_raises():
+    with patch(_RENDER, return_value=[b"png"]), pytest.raises(ValueError, match="Unknown"):
+        _conv(default_profile="ocr").run(sources=["f.docx"], meta=None, profile="banana")
 
 
 def _user_text_parts(post_mock) -> list[str]:

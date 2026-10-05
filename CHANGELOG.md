@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ## [Unreleased]
 
 - Added actions and linted code base.
+- Removed duplicated helpers, unreachable fallbacks and unused error classes/settings from `app/` (~400 lines).
+- Kreuzberg responses with an unrecognized shape now fail with `EXTRACTION_FAILED` instead of silently indexing zero
+  chunks.
+- Docker: prod venv and code are root-owned (read-only to `appuser`); image build no longer runs a recursive `chown`.
 
 ## [0.0.8] - 2026-09-24
 
