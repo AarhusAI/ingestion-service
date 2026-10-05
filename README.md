@@ -137,9 +137,11 @@ flowchart LR
    (`signal=csv`, visible in the INFO log, the ingest response's `extraction`
    object, and chunk meta). `EXTRACTION_ENGINE=csv` pins it directly.
 2. **`CsvConverter`** (`app/pipelines/csv_converter.py`, stdlib `csv`, no sidecar)
-   — decodes `utf-8-sig`, falling back to `cp1252` (Danish Excel); picks the
-   delimiter (`;`, `,` or tab) by count in the header line; treats row 1 as the
-   header (empty header cells become `column N`); collapses whitespace inside
+   — decodes UTF-16 (BOM, Excel "Unicode Text") or `utf-8-sig`, falling back to
+   `cp1252` (Danish Excel, undefined bytes replaced); delimiter from an Excel
+   `sep=X` first line, tab for `.tsv`, else `csv.Sniffer` over `;` `,` tab
+   (header-line count as fallback); treats row 1 as the header (empty header
+   cells and cells past the header become `column N`); collapses whitespace inside
    cells so a quoted line break can't fake a row boundary; drops empty values and
    blank rows; joins rows with a blank line. Read/parse failures raise
    `EXTRACTION_FAILED`.
@@ -685,7 +687,7 @@ because they are **contracts with other services**:
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
 | `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred diagram. Picks its vision profile per document — `diagram-topology` (Mermaid only) for a *vector* flowchart whose labels are Word shapes, or `figure` for a *raster* PNG diagram whose labels are pixels. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
-| `csv` | day-one | In-process (stdlib). `.csv`/`.tsv` rows → `column: value` lines, rows separated by a blank line, so every chunk keeps its column names. Delimiter (`;` `,` tab) sniffed from the header line; UTF-8 with cp1252 fallback; row 1 is the header. Token/markdown splitters cut these docs only between rows, zero overlap |
+| `csv` | day-one | In-process (stdlib). `.csv`/`.tsv` rows → `column: value` lines, rows separated by a blank line, so every chunk keeps its column names. Delimiter from Excel `sep=` line, tab for `.tsv`, else sniffed (`;` `,` tab); UTF-16 BOM / UTF-8 / cp1252 fallback; row 1 is the header. Token/markdown splitters cut these docs only between rows, zero overlap |
 | `auto` | day-one | Per-document routing: `.csv`/`.tsv` → `csv`; a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
 
 **`EXTRACTION_ROUTER_DIAGRAM_PROFILE`.** With the default diagram engine (`hybrid-diagram`)

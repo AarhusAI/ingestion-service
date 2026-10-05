@@ -39,6 +39,30 @@ def test_quoted_multiline_cell_is_flattened(tmp_path):
     assert _convert(tmp_path, b'a,b\n"x\n\ny",2\n').content == "a: x y\nb: 2"
 
 
+@pytest.mark.parametrize(
+    ("data", "name", "expected"),
+    [
+        (
+            b"Navn, fuldt\tBy, postnr\nAnne\t8000 Aarhus\n",
+            "t.tsv",
+            "Navn, fuldt: Anne\nBy, postnr: 8000 Aarhus",
+        ),
+        (
+            b'"Efternavn, fornavn, mellemnavn";By\n"Hansen, Anne, M";Aarhus\n',
+            "t.csv",
+            "Efternavn, fornavn, mellemnavn: Hansen, Anne, M\nBy: Aarhus",
+        ),
+        (b"sep=;\nnavn;alder\nAnne;30\n", "t.csv", "navn: Anne\nalder: 30"),
+        ("navn;beløb, kr\nAnne;1,50\n".encode(), "t.csv", "navn: Anne\nbeløb, kr: 1,50"),
+        ("a\tb\n1\t2\n".encode("utf-16"), "t.txt.csv", "a: 1\nb: 2"),
+        (b"a\n\x81x\n", "t.csv", "a: \ufffdx"),
+        (b"a,b\n1,2,3,4\n", "t.csv", "a: 1\nb: 2\ncolumn 3: 3\ncolumn 4: 4"),
+    ],
+)
+def test_review_regressions(tmp_path, data, name, expected):
+    assert _convert(tmp_path, data, name=name).content == expected
+
+
 def test_missing_file_is_extraction_error(tmp_path):
     with pytest.raises(ExtractionError, match=r"gone\.csv"):
         CsvConverter().run(sources=[str(tmp_path / "gone.csv")])
