@@ -53,7 +53,7 @@ class RoutingConverter:
         # Build every engine we might route to up front. A misconfigured /
         # undeployable engine (e.g. an optional dep missing) therefore surfaces
         # at startup, not at the first matching document.
-        routable = {self._default_engine, self._diagram_engine}
+        routable = {self._default_engine, self._diagram_engine, "csv"}
         self._converters = {
             name: build_converter(settings, engine_override=name) for name in routable
         }

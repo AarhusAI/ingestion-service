@@ -12,7 +12,7 @@ Document ingestion service for Open WebUI. A standalone FastAPI microservice tha
 The pipeline is configurable end-to-end:
 
 - **Extraction**: `EXTRACTION_ENGINE` selects `pypdf`, `kreuzberg`, `docling`, `unstructured`, `vision-llm`,
-  `hybrid-diagram`, or `auto`. The default is consistent across files: `config.py` falls back to `kreuzberg`,
+  `hybrid-diagram`, `csv`, or `auto`. The default is consistent across files: `config.py` falls back to `kreuzberg`,
   `.env.example` ships `kreuzberg`, and `docker-compose.yml` falls back to `auto` (`${EXTRACTION_ENGINE:-auto}`) whose
   router default is also `kreuzberg` — so a `cp .env.example .env` Quick Start gives you `kreuzberg`, while an unset var
   under compose gives `auto` (→ `kreuzberg` for ordinary docs). `kreuzberg` runs as an external HTTP sidecar (a
@@ -27,8 +27,12 @@ The pipeline is configurable end-to-end:
   XML) with a vision-inferred diagram, falling through to `vision-llm` for non-docx; it picks its vision profile per
   document via `docx_diagram_profile` — `diagram-topology` (Mermaid only) when the labels live in Word shapes/textboxes
   (a _vector_ flowchart), or the `figure` profile when the diagram is a flattened _raster_ PNG (labels are pixels, so
-  the model reads them from the rendered image while the prose still comes from native text). `auto` is a routing _mode_
-  (not a converter): docx with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster
+  the model reads them from the rendered image while the prose still comes from native text). `csv`
+  (`app/pipelines/csv_converter.py`, stdlib, in-process) writes each row as `column: value` lines with rows separated by
+  `\n\n` and stamps `meta.extraction_engine="csv"`; the token/markdown splitters key on that to split only at row
+  boundaries with zero overlap (markdown mode skips the header split, which would rejoin lines with `"  \n"`). `auto` is
+  a routing _mode_ (not a converter): `.csv`/`.tsv` → `csv`; docx with a vector flowchart (drawing/textbox text
+  outweighs body text) **or** a large body raster
   image (a flattened diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`),
   everything else → `EXTRACTION_ROUTER_DEFAULT`; detection thresholds live in `EXTRACTION_ROUTER_*` (textbox:
   `_MIN_TEXTBOXES`/`_DRAWING_RATIO`; raster: `_MIN_BODY_IMAGES`/`_MIN_IMAGE_EMU` display-area floor + opt-in
@@ -176,7 +180,7 @@ Each Qdrant point's payload carries:
         # Auto-routing classification (populated only when EXTRACTION_ENGINE=auto;
         # stamped by RoutingConverter, surfaced by the chunk-inspection endpoint).
         "extraction_engine": <str, the engine that actually ran for this doc>,
-        "extraction_route":  <dict, {"signal": "textbox|raster|default", ...detector metrics}>,
+        "extraction_route":  <dict, {"signal": "textbox|raster|csv|default", ...detector metrics}>,
     }
 }
 ```

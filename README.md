@@ -113,6 +113,70 @@ Each stage, in order:
   `meta.collection_name`; its keyword payload index is created by
   `app/services/qdrant_setup.py` at startup.
 
+### CSV Ingestion
+
+Flat-text extraction breaks tables: once the splitter cuts past the first rows,
+later chunks carry values without their column names (`25`, `Aalborg` — of
+what?). `.csv` / `.tsv` files therefore get their own in-process engine that
+writes every row as self-describing `column: value` lines, and a splitter branch
+that keeps rows whole.
+
+```mermaid
+flowchart LR
+  A["PUT /api/v1/ingest"] --> B{EXTRACTION_ENGINE}
+  B -->|auto| C["RoutingConverter"]
+  C -->|".csv / .tsv<br/>signal=csv"| D["CsvConverter<br/>column: value rows"]
+  C -->|other files| K["default / diagram engine"]
+  B -->|csv| D
+  D -->|"meta.extraction_engine=csv"| E["Splitter: CSV branch<br/>row boundaries, overlap 0"]
+  E --> F["Embedders"]
+  F --> G[("Qdrant")]
+```
+
+1. **Routing** — under `auto`, `classify_engine()` sends `.csv` / `.tsv` to `csv`
+   (`signal=csv`, visible in the INFO log, the ingest response's `extraction`
+   object, and chunk meta). `EXTRACTION_ENGINE=csv` pins it directly.
+2. **`CsvConverter`** (`app/pipelines/csv_converter.py`, stdlib `csv`, no sidecar)
+   — decodes UTF-16 (BOM, Excel "Unicode Text") or `utf-8-sig`, falling back to
+   `cp1252` (Danish Excel, undefined bytes replaced); delimiter from an Excel
+   `sep=X` first line, tab for `.tsv`, else `csv.Sniffer` over `;` `,` tab
+   (header-line count as fallback); treats row 1 as the header (empty header
+   cells and cells past the header become `column N`); collapses whitespace inside
+   cells so a quoted line break can't fake a row boundary; drops empty values and
+   blank rows; joins rows with a blank line. Read/parse failures raise
+   `EXTRACTION_FAILED`.
+3. **Splitter** — for documents with `meta.extraction_engine == "csv"`, both
+   token and markdown modes cut only at the blank lines between rows, with zero
+   overlap (rows carry their own context; overlap would only store rows twice).
+   Markdown mode also skips its heading split, which would otherwise collapse the
+   blank lines between rows.
+
+Example — a `;`-separated cp1252 export:
+
+```text
+navn;alder;by
+Søren;52;Århus
+;;
+Mette;;København
+```
+
+becomes:
+
+```text
+navn: Søren
+alder: 52
+by: Århus
+
+navn: Mette
+by: København
+```
+
+Known limits: the whole file is read into memory; row 1 is always the header;
+a single row wider than the chunk budget is split between its lines; `word` /
+`sentence` / `passage` modes have no CSV branch; a pinned non-CSV engine (e.g.
+`EXTRACTION_ENGINE=kreuzberg`) still gets CSVs as flat text; `.xlsx` isn't
+handled here.
+
 ### Idempotency
 
 Overwrites are **versioned (blue/green)**: every run stamps a fresh
@@ -151,6 +215,7 @@ Where to start reading when you need to change something:
 | `app/pipelines/indexing.py` | Pipeline DAG construction, idempotency, exception teardown |
 | `app/pipelines/converters.py` | Converter factory (`EXTRACTION_ENGINE` dispatch) |
 | `app/pipelines/kreuzberg_converter.py` | Custom Haystack component for the Kreuzberg HTTP sidecar |
+| `app/pipelines/csv_converter.py` | `csv` engine — `.csv`/`.tsv` rows → `column: value` text |
 | `app/pipelines/routing_converter.py` | `auto` mode — per-document engine routing (docx signals live in `detectors.py`) |
 | `app/pipelines/vision_llm_converter.py` | `vision-llm` engine — page render → multimodal LLM → Markdown + Mermaid |
 | `app/pipelines/hybrid_diagram_converter.py` | `hybrid-diagram` engine — native docx text + vision-inferred diagram |
@@ -375,7 +440,7 @@ Fields:
 
 - `file` (required) — the document to extract.
 - `engine` (optional) — one of
-  `pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram`.
+  `pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram | csv`.
   Overrides `EXTRACTION_ENGINE` for this single request. When omitted, the
   configured default is used. `auto` is a routing *mode* for ingest, not a
   concrete converter, so it is **not** accepted here — pick the engine you want
@@ -622,7 +687,8 @@ because they are **contracts with other services**:
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
 | `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred diagram. Picks its vision profile per document — `diagram-topology` (Mermaid only) for a *vector* flowchart whose labels are Word shapes, or `figure` for a *raster* PNG diagram whose labels are pixels. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
-| `auto` | day-one | Per-document routing: a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
+| `csv` | day-one | In-process (stdlib). `.csv`/`.tsv` rows → `column: value` lines, rows separated by a blank line, so every chunk keeps its column names. Delimiter from Excel `sep=` line, tab for `.tsv`, else sniffed (`;` `,` tab); UTF-16 BOM / UTF-8 / cp1252 fallback; row 1 is the header. Token/markdown splitters cut these docs only between rows, zero overlap |
+| `auto` | day-one | Per-document routing: `.csv`/`.tsv` → `csv`; a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
 
 **`EXTRACTION_ROUTER_DIAGRAM_PROFILE`.** With the default diagram engine (`hybrid-diagram`)
 this is mostly moot — for a real docx the hybrid path picks its own profile

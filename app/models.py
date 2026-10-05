@@ -45,7 +45,8 @@ class ExtractionInfo(BaseModel):
     """How the document was extracted, surfaced on the ingest response.
 
     ``engine`` is the engine that ran. ``route`` carries the auto-router's
-    signal + measured metrics (``{"signal": ..., "textboxes": ..., "ratio": ...}``)
+    signal (``textbox | raster | csv | default``) + measured metrics
+    (``{"signal": ..., "textboxes": ..., "ratio": ...}``)
     when ``EXTRACTION_ENGINE=auto``; it is ``None`` for a pinned engine, where
     no classification step runs.
     """

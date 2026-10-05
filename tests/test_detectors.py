@@ -272,3 +272,9 @@ def test_classify_engine_non_docx_is_default():
     assert decision.engine is None
     assert decision.signal == "default"
     assert decision.metrics == {}
+
+
+def test_csv_and_tsv_route_to_csv_engine():
+    for name in ("export.csv", "EXPORT.TSV"):
+        decision = classify_engine(name, _settings())
+        assert (decision.engine, decision.signal) == ("csv", "csv")
