@@ -82,14 +82,6 @@
                 }
             },
             {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 15,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 22,
