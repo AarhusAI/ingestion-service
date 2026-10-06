@@ -72,7 +72,10 @@ def test_build_converter_vision_llm_threads_profile():
         vision_llm_api_base_url="http://vlm:8080/v1",
         vision_llm_profile="ocr",
     )
+    from app.pipelines.vision_llm_converter import VisionLLMConverter
+
     c = build_converter(s)
+    assert isinstance(c, VisionLLMConverter)
     assert c._default_profile == "ocr"
 
 
@@ -876,7 +879,7 @@ def test_markdown_budget_never_collapses_below_floor(monkeypatch):
     huge = " ".join(f"h{i}" for i in range(600))
     assert ch._content_budget(huge) == splitter_mod._MIN_BUDGET
     # And the overlap handed to langchain stays legal for that budget.
-    assert ch._splitter_for(splitter_mod._MIN_BUDGET) is not None
+    assert ch._splitter_for(splitter_mod._MIN_BUDGET, ch._chunk_overlap) is not None
 
 
 def test_markdown_budget_disabled_without_max_tokens(monkeypatch):
@@ -952,3 +955,38 @@ def test_embedding_guard_message_omits_chunk_text():
         DenseEmbeddingGuard().run(documents=[Document(content=secret, meta={"split_id": 7})])
     assert secret not in str(excinfo.value)
     assert "7" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("mode", ["markdown", "token"])
+def test_csv_docs_split_on_row_boundaries_without_overlap(monkeypatch, mode):
+    """Real langchain splitters (word-count tokenizer): a CSV doc must never cut
+    mid-row nor duplicate rows via overlap — each chunk starts at a row's first
+    column, and every row lands in exactly one chunk."""
+    from haystack import Document
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    from app.pipelines import splitter as splitter_mod
+
+    class _WordSplitter(RecursiveCharacterTextSplitter):
+        @classmethod
+        def from_huggingface_tokenizer(cls, tokenizer, **kwargs):
+            return cls(length_function=lambda t: len(tokenizer.tokenize(t)), **kwargs)
+
+    monkeypatch.setattr(splitter_mod, "_load_tokenizer", lambda _m, _r="": _FakeTokenizer())
+    monkeypatch.setattr("langchain_text_splitters.RecursiveCharacterTextSplitter", _WordSplitter)
+
+    cls = (
+        splitter_mod.MarkdownChunker
+        if mode == "markdown"
+        else splitter_mod.HuggingFaceTokenizerSplitter
+    )
+    sp = cls(tokenizer_model="x", chunk_size=100, chunk_overlap=50)
+    text = "\n\n".join(f"id: {n}\nval: some text" for n in range(300))
+    out = sp.run(documents=[Document(content=text, meta={"extraction_engine": "csv"})])[
+        "documents"
+    ]
+
+    assert len(out) > 1
+    assert all(d.content.startswith("id:") for d in out)
+    ids = [line for d in out for line in d.content.splitlines() if line.startswith("id:")]
+    assert ids == [f"id: {n}" for n in range(300)]

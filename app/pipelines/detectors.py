@@ -19,9 +19,9 @@ Two motivating cases, both routed to the diagram engine:
 
 Both signals are measured cheaply from the package XML without a full parse.
 
-``detect_engine`` returns an engine name to route to, or ``None`` to mean "use
-the router's default". It never raises for routing reasons — on any structural
-surprise it returns ``None`` so the caller falls back safely.
+``classify_engine`` returns a ``RoutingDecision`` whose engine is ``None`` to
+mean "use the router's default". It never raises for routing reasons — on any
+structural surprise it returns a default decision so the caller falls back safely.
 
 ``docx_diagram_profile`` is the companion the diagram converter uses to pick its
 vision-pass profile per document: ``diagram-topology`` when the labels are in
@@ -49,7 +49,8 @@ class RoutingDecision:
     ``engine`` is the engine to route to, or ``None`` to mean "use the router's
     default" (detectors don't know the router's default engine). ``signal`` is
     which heuristic fired — ``"textbox"`` (vector flowchart), ``"raster"``
-    (large embedded figure), or ``"default"`` (neither). ``metrics`` carries the
+    (large embedded figure), ``"csv"`` (``.csv``/``.tsv`` extension), or
+    ``"default"`` (none). ``metrics`` carries the
     measured numbers behind the decision (textbox/body-word counts, ratio,
     image area …) so "why this engine" is inspectable downstream.
     """
@@ -69,7 +70,7 @@ _TEXTBOX_TAGS = ("<w:txbxContent", "<wps:txbx", "<v:textbox")
 # only form that carries a measurable ``<wp:extent>`` (legacy VML images size
 # via CSS, so the area gate below couldn't see them anyway). Same namespace-
 # stable substring trick as the textbox tags.
-_IMAGE_TAGS = ("<a:blip",)
+_IMAGE_TAG = "<a:blip"
 
 # Picture display extent in EMU. The trailing space after ``wp:extent`` matters:
 # it keeps this from also matching the sibling ``<wp:effectExtent>`` (whose
@@ -107,20 +108,13 @@ def classify_engine(source: str, settings: Settings) -> RoutingDecision:
     ``"default"`` decision so the caller falls back safely.
     """
     ext = Path(source).suffix.lower()
+    if ext in (".csv", ".tsv"):
+        return RoutingDecision(engine="csv", signal="csv")
     if ext == ".docx":
         return _classify_docx(source, settings)
     # PDF hook (future: scanned/image-ratio detection). Everything else passes
     # through to the router default.
     return RoutingDecision(engine=None, signal="default")
-
-
-def detect_engine(source: str, settings: Settings) -> str | None:
-    """Engine name to route ``source`` to, or ``None`` for the default.
-
-    Thin back-compat wrapper over :func:`classify_engine` — kept so callers that
-    only need the engine name don't have to unpack the decision.
-    """
-    return classify_engine(source, settings).engine
 
 
 def _classify_docx(source: str, settings: Settings) -> RoutingDecision:
@@ -215,7 +209,7 @@ def _detect_raster(
     ``"raster"`` decision when the area (and optional word-ratio gate) clears,
     or a ``"default"`` decision carrying the measured metrics otherwise.
     """
-    image_count = sum(document_xml.count(tag) for tag in _IMAGE_TAGS)
+    image_count = document_xml.count(_IMAGE_TAG)
     if image_count < settings.extraction_router_min_body_images:
         return None
     max_area = max(

@@ -50,6 +50,7 @@ dev = [
     # once the baseline is clean. See sec.md Finding 12.
     "pip-audit>=2.7",
     "bandit>=1.7",
+    "basedpyright>=1.31",
 ]
 
 [build-system]
@@ -67,6 +68,12 @@ ignore = ["B008"]  # Allow Depends() in function defaults (FastAPI pattern)
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
+
+# Existing errors are recorded in .basedpyright/baseline.json; only new ones fail.
+[tool.basedpyright]
+include = ["app", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

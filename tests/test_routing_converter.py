@@ -1,6 +1,6 @@
 """RoutingConverter delegation (app/pipelines/routing_converter.py).
 
-``build_converter`` and ``detect_engine`` are patched at the module symbol so no
+``build_converter`` and ``classify_engine`` are patched at the module symbol so no
 real converter is constructed and the routing decision is forced per test.
 """
 
@@ -44,8 +44,12 @@ def _fakes():
     default.run.return_value = {"documents": [Document(content="default out")]}
     vision.run.return_value = {"documents": [Document(content="vision out")]}
 
-    def build(_s, engine_override=None):
-        return {"kreuzberg": default, "vision-llm": vision}[engine_override]
+    def build(_s, engine_override=""):
+        return {
+            "kreuzberg": default,
+            "vision-llm": vision,
+            "csv": MagicMock(accepts_profile=False),
+        }[engine_override]
 
     return default, vision, build
 
@@ -75,8 +79,12 @@ def test_routes_to_hybrid_diagram_engine_and_forwards_profile():
     default.run.return_value = {"documents": [Document(content="d")]}
     hybrid.run.return_value = {"documents": [Document(content="hybrid out")]}
 
-    def build(_s, engine_override=None):
-        return {"kreuzberg": default, "hybrid-diagram": hybrid}[engine_override]
+    def build(_s, engine_override=""):
+        return {
+            "kreuzberg": default,
+            "hybrid-diagram": hybrid,
+            "csv": MagicMock(accepts_profile=False),
+        }[engine_override]
 
     s = _settings(extraction_router_diagram_engine="hybrid-diagram")
     with (
@@ -136,8 +144,10 @@ def test_warm_up_skips_converters_without_warm_up():
     vision = MagicMock(name="vision")
     plain = object()  # no warm_up attribute
 
-    def build(_s, engine_override=None):
-        return {"kreuzberg": plain, "vision-llm": vision}[engine_override]
+    def build(_s, engine_override=""):
+        return {"kreuzberg": plain, "vision-llm": vision, "csv": MagicMock(accepts_profile=False)}[
+            engine_override
+        ]
 
     with patch.object(rc, "build_converter", side_effect=build):
         conv = rc.RoutingConverter(_settings())
@@ -219,8 +229,10 @@ def test_profile_not_passed_to_non_profile_aware_diagram_engine():
     default.accepts_profile = False
     default.run.return_value = {"documents": [Document(content="d")]}
 
-    def build(_s, engine_override=None):
-        return {"kreuzberg": default, "docling": plain}[engine_override]
+    def build(_s, engine_override=""):
+        return {"kreuzberg": default, "docling": plain, "csv": MagicMock(accepts_profile=False)}[
+            engine_override
+        ]
 
     s = _settings(
         extraction_router_default="kreuzberg",

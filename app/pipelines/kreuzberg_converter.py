@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 from haystack import Document, component
 
+from app.pipelines.converters import meta_for
 from app.pipelines.errors import ExtractionError
 
 log = logging.getLogger(__name__)
@@ -81,12 +82,7 @@ class KreuzbergRemoteConverter:
         # Split timeout — connect fails fast so a stalled sidecar doesn't
         # tie up a worker for the full read window. Write/pool reuse the
         # connect value: nothing about the upload is read-shaped.
-        self._timeout = httpx.Timeout(
-            connect=connect_timeout,
-            read=read_timeout,
-            write=connect_timeout,
-            pool=connect_timeout,
-        )
+        self._timeout = httpx.Timeout(connect_timeout, read=read_timeout)
         self._verify = verify
         # One pooled client for the component's lifetime — the converter is a
         # process-lifetime singleton, so sidecar connections are reused instead
@@ -102,7 +98,7 @@ class KreuzbergRemoteConverter:
         docs: list[Document] = []
         for i, source in enumerate(sources):
             path = Path(source)
-            request_meta = _meta_for(meta, i)
+            request_meta = meta_for(meta, i)
             # Kreuzberg dispatches on the multipart part's Content-Type rather
             # than sniffing the bytes. Sending ``application/octet-stream`` for
             # everything trips ``UnsupportedFormatError`` server-side, so guess
@@ -124,9 +120,13 @@ class KreuzbergRemoteConverter:
                 # class names entirely; see sec.md Finding 5).
                 raise ExtractionError(f"kreuzberg extract failed for {path.name}: {exc}") from exc
 
-            payload = resp.json()
-            content = _content_from_payload(payload, self._min_table_columns)
-            doc_meta = _doc_meta_from_payload(payload)
+            result = _first_result(resp.json())
+            if result is None:
+                raise ExtractionError(
+                    f"kreuzberg returned an unrecognized response shape for {path.name}"
+                )
+            content = _content_from_payload(result, self._min_table_columns)
+            doc_meta = _doc_meta_from_payload(result)
             # Request meta is the contract with the route layer (file_id /
             # collection_name / user_id …) and must win on any collision.
             merged_meta = {**doc_meta, **request_meta}
@@ -134,17 +134,7 @@ class KreuzbergRemoteConverter:
         return {"documents": docs}
 
 
-def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:
-    """Match Haystack convention: ``meta`` may be a single dict applied to all
-    sources, a per-source list, or omitted entirely."""
-    if meta is None:
-        return {}
-    if isinstance(meta, list):
-        return dict(meta[i]) if i < len(meta) else {}
-    return dict(meta)
-
-
-def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
+def _content_from_payload(result: dict, min_table_columns: int = 2) -> str:
     """Build the chunk-source text from a Kreuzberg ``/extract`` response.
 
     The 4.0.x API returns a JSON **array** — one ``ExtractionResult`` per
@@ -165,21 +155,12 @@ def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
       those merely duplicate the body, so we drop them. ``min_table_columns=1``
       restores the pre-gate keep-all behaviour.
 
-    Defensive against shape drift: accepts a bare object as well as the
-    canonical array, and returns the empty string if nothing usable is in the
-    payload. Empty content does NOT fail the ingest — it flows through to a
-    successful zero-chunk write — so the warning here (plus the zero-chunk
-    warning in ``indexing.py``) is the operator's signal that the sidecar's
-    response shape drifted.
+    ``result`` is the ExtractionResult already validated by ``_first_result``.
+    An empty ``content`` is a legitimately empty document and flows through as
+    a zero-chunk ingest; an unrecognized response shape raises
+    ``ExtractionError`` in ``run`` instead.
     """
-    result = _first_result(payload)
-    if result is None:
-        log.warning(
-            "kreuzberg response had no usable extraction result (shape drift?); "
-            "treating as empty content"
-        )
-        return ""
-    body = result.get("content") if isinstance(result.get("content"), str) else ""
+    body = result["content"]
     tables = result.get("tables") if isinstance(result.get("tables"), list) else []
     table_section = _render_tables_section(tables, min_table_columns)
     if table_section:
@@ -188,23 +169,16 @@ def _content_from_payload(payload: object, min_table_columns: int = 2) -> str:
 
 
 def _first_result(payload: object) -> dict | None:
-    """Pull the single ExtractionResult dict from a Kreuzberg response.
-
-    The shipping shape is a one-element JSON array. The bare-object branch
-    keeps us tolerant of older / variant builds that returned just the dict,
-    matching the previous ``_content_from_payload`` fallback semantics.
-    """
-    if isinstance(payload, list):
-        if not payload:
-            return None
-        first = payload[0]
-        return first if isinstance(first, dict) else None
-    if isinstance(payload, dict):
-        if "content" in payload:
-            return payload
-        inner = payload.get("result")
-        if isinstance(inner, dict):
-            return inner
+    """The single ExtractionResult from a Kreuzberg 4.0.x response — a
+    one-element JSON array (one source per request) whose element carries a
+    string ``content``. ``None`` for any other shape; ``run`` raises on it."""
+    if (
+        isinstance(payload, list)
+        and payload
+        and isinstance(payload[0], dict)
+        and isinstance(payload[0].get("content"), str)
+    ):
+        return payload[0]
     return None
 
 
@@ -218,18 +192,14 @@ def _first_result(payload: object) -> dict | None:
 _DOC_META_FIELDS: tuple[str, ...] = ("title", "subject", "authors", "created_at")
 
 
-def _doc_meta_from_payload(payload: object) -> dict:
+def _doc_meta_from_payload(result: dict) -> dict:
     """Pick the retrieval-useful subset of document-level metadata.
 
     Empty / falsy values are dropped so chunks don't carry
     ``"subject": ""`` / ``"authors": []`` noise — the retrieval-agent
     preview whitelist also drops empty values, so emitting them here
-    is just wasted bytes in Qdrant. Returns an empty dict for any
-    payload that doesn't expose usable doc meta.
+    is just wasted bytes in Qdrant.
     """
-    result = _first_result(payload)
-    if result is None:
-        return {}
     out: dict = {}
     inner = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     for key in _DOC_META_FIELDS:

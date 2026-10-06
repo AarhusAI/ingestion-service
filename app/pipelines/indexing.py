@@ -102,7 +102,7 @@ class IndexingResult(NamedTuple):
     """
 
     chunks_count: int
-    extraction: dict | None
+    extraction: dict
 
 
 # Per-file_id locks serialize concurrent ingests of the same file. Without
@@ -171,11 +171,16 @@ def init_pipeline(settings: Settings | None = None) -> None:
 
     log.info(
         "indexing pipeline ready (extraction=%s, embed_provider=%s, embed_model=%s, "
-        "sparse=%s, qdrant_index=%s, warm_up=%.2fs)",
+        "embed_dim=%s, sparse=%s, chunking=%s/%d/%d, qdrant=%s/%s, warm_up=%.2fs)",
         s.extraction_engine,
         s.embedding_provider,
         s.embedding_model,
-        s.enable_sparse_embeddings,
+        s.embedding_dim,
+        s.sparse_embedding_model if s.enable_sparse_embeddings else "off",
+        s.chunk_split_by,
+        s.chunk_size,
+        s.chunk_overlap,
+        s.qdrant_uri,
         s.qdrant_index,
         warm_up_s,
     )
@@ -227,8 +232,7 @@ def _build_converter_for_pipeline(s: Settings):
 def _build_pipeline(s: Settings, document_store: QdrantDocumentStore) -> Pipeline:
     pipeline = Pipeline()
     # Each component's run is wrapped to record per-stage latency
-    # (pipeline_stage_duration_seconds{stage=...}); instrument_stage is a no-op
-    # passthrough if wrapping ever fails, so it can't break the pipeline.
+    # (pipeline_stage_duration_seconds{stage=...}).
     pipeline.add_component(
         "converter", metrics.instrument_stage(_build_converter_for_pipeline(s), "converter")
     )
@@ -336,19 +340,16 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
                     "content; any previously indexed version is kept",
                     sanitize_for_log(file_id),
                 )
-            if extraction:
-                metrics.extraction_route_total.labels(
-                    engine=extraction["engine"],
-                    signal=(extraction["route"] or {}).get("signal", "default"),
-                ).inc()
+            signal = (extraction["route"] or {}).get("signal", "default")
+            metrics.extraction_route_total.labels(engine=extraction["engine"], signal=signal).inc()
 
             log.info(
                 "ingest ok: file_id=%s collection=%s chunks=%d engine=%s signal=%s",
                 sanitize_for_log(file_id),
                 sanitize_for_log(meta.get("collection_name")),
                 chunks_count,
-                extraction["engine"] if extraction else "-",
-                (extraction["route"] or {}).get("signal", "-") if extraction else "-",
+                extraction["engine"],
+                signal,
             )
             return IndexingResult(chunks_count=chunks_count, extraction=extraction)
         except Exception:
@@ -363,7 +364,7 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
             raise
 
 
-def _extraction_summary(result: dict) -> dict | None:
+def _extraction_summary(result: dict) -> dict:
     """Derive ``{"engine", "route"}`` from the pipeline result.
 
     Reads the converter's stamped meta (``extraction_engine`` /

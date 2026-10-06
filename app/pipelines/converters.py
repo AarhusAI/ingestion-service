@@ -15,6 +15,16 @@ Not built here: ``"auto"`` is a routing *mode*, not an engine — see
 from app.config import Settings
 
 
+def meta_for(meta: dict | list[dict] | None, i: int) -> dict:
+    """Match Haystack convention: ``meta`` may be a single dict applied to all
+    sources, a per-source list, or omitted entirely."""
+    if meta is None:
+        return {}
+    if isinstance(meta, list):
+        return dict(meta[i]) if i < len(meta) else {}
+    return dict(meta)
+
+
 def build_converter(settings: Settings, engine_override: str | None = None):
     """Build the configured converter, or one identified by ``engine_override``.
 
@@ -101,8 +111,14 @@ def build_converter(settings: Settings, engine_override: str | None = None):
 
         return HybridDiagramConverter(settings)
 
+    if engine == "csv":
+        # In-process stdlib csv; rows serialized as ``column: value`` blocks.
+        from app.pipelines.csv_converter import CsvConverter
+
+        return CsvConverter()
+
     raise ValueError(
         f"Unknown EXTRACTION_ENGINE={engine!r} "
         "(supported: pypdf | docling | unstructured | kreuzberg | "
-        "vision-llm | hybrid-diagram)"
+        "vision-llm | hybrid-diagram | csv)"
     )

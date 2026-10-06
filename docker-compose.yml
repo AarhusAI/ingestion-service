@@ -11,10 +11,24 @@ services:
       dockerfile: Dockerfile
       context: .
       target: ${TARGET:-dev}
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
       platforms:
         - "linux/amd64"
-#        - "linux/arm64"
-    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    #        - "linux/arm64"
+    command:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+      ]
     networks:
       - app
       - frontend
@@ -117,6 +131,9 @@ services:
     volumes:
       - ./:/app
     labels:
+      # Picked up by the lint and tests workflows.
+      - "dk.itkdev.python=true"
+      # Traefik setup
       - "traefik.enable=true"
       - "traefik.docker.network=frontend"
       - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${COMPOSE_DOMAIN}`)"
@@ -131,7 +148,7 @@ services:
     ports:
       - "3000"
     healthcheck:
-      test: [ "CMD", "curl", "-sf", "http://localhost:3000/health" ]
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
       start_period: 20s
       interval: 30s
       timeout: 10s
@@ -140,3 +157,12 @@ services:
       - "gotenberg"
       - "--chromium-disable-javascript=true"
       - "--chromium-allow-list=file:///tmp/.*"
+
+  # Used by .github/workflows/yaml.yaml. No official image yet
+  # (https://github.com/prettier/prettier/issues/15206).
+  prettier:
+    image: jauderho/prettier
+    profiles:
+      - dev
+    volumes:
+      - ./:/work

@@ -113,6 +113,70 @@ Each stage, in order:
   `meta.collection_name`; its keyword payload index is created by
   `app/services/qdrant_setup.py` at startup.
 
+### CSV Ingestion
+
+Flat-text extraction breaks tables: once the splitter cuts past the first rows,
+later chunks carry values without their column names (`25`, `Aalborg` — of
+what?). `.csv` / `.tsv` files therefore get their own in-process engine that
+writes every row as self-describing `column: value` lines, and a splitter branch
+that keeps rows whole.
+
+```mermaid
+flowchart LR
+  A["PUT /api/v1/ingest"] --> B{EXTRACTION_ENGINE}
+  B -->|auto| C["RoutingConverter"]
+  C -->|".csv / .tsv<br/>signal=csv"| D["CsvConverter<br/>column: value rows"]
+  C -->|other files| K["default / diagram engine"]
+  B -->|csv| D
+  D -->|"meta.extraction_engine=csv"| E["Splitter: CSV branch<br/>row boundaries, overlap 0"]
+  E --> F["Embedders"]
+  F --> G[("Qdrant")]
+```
+
+1. **Routing** — under `auto`, `classify_engine()` sends `.csv` / `.tsv` to `csv`
+   (`signal=csv`, visible in the INFO log, the ingest response's `extraction`
+   object, and chunk meta). `EXTRACTION_ENGINE=csv` pins it directly.
+2. **`CsvConverter`** (`app/pipelines/csv_converter.py`, stdlib `csv`, no sidecar)
+   — decodes UTF-16 (BOM, Excel "Unicode Text") or `utf-8-sig`, falling back to
+   `cp1252` (Danish Excel, undefined bytes replaced); delimiter from an Excel
+   `sep=X` first line, tab for `.tsv`, else `csv.Sniffer` over `;` `,` tab
+   (header-line count as fallback); treats row 1 as the header (empty header
+   cells and cells past the header become `column N`); collapses whitespace inside
+   cells so a quoted line break can't fake a row boundary; drops empty values and
+   blank rows; joins rows with a blank line. Read/parse failures raise
+   `EXTRACTION_FAILED`.
+3. **Splitter** — for documents with `meta.extraction_engine == "csv"`, both
+   token and markdown modes cut only at the blank lines between rows, with zero
+   overlap (rows carry their own context; overlap would only store rows twice).
+   Markdown mode also skips its heading split, which would otherwise collapse the
+   blank lines between rows.
+
+Example — a `;`-separated cp1252 export:
+
+```text
+navn;alder;by
+Søren;52;Århus
+;;
+Mette;;København
+```
+
+becomes:
+
+```text
+navn: Søren
+alder: 52
+by: Århus
+
+navn: Mette
+by: København
+```
+
+Known limits: the whole file is read into memory; row 1 is always the header;
+a single row wider than the chunk budget is split between its lines; `word` /
+`sentence` / `passage` modes have no CSV branch; a pinned non-CSV engine (e.g.
+`EXTRACTION_ENGINE=kreuzberg`) still gets CSVs as flat text; `.xlsx` isn't
+handled here.
+
 ### Idempotency
 
 Overwrites are **versioned (blue/green)**: every run stamps a fresh
@@ -144,13 +208,14 @@ Open WebUI's reindex action depends on this contract.
 Where to start reading when you need to change something:
 
 | File | What lives there |
-|---|---|
+| --- | --- |
 | `app/main.py` | FastAPI app, lifespan, health endpoints |
 | `app/routes/ingest.py` | `PUT /api/v1/ingest` — auth, content-type dispatch, temp-file lifecycle, error code mapping |
 | `app/routes/extract.py` | `POST /api/v1/extract` — developer-facing extraction probe |
 | `app/pipelines/indexing.py` | Pipeline DAG construction, idempotency, exception teardown |
 | `app/pipelines/converters.py` | Converter factory (`EXTRACTION_ENGINE` dispatch) |
 | `app/pipelines/kreuzberg_converter.py` | Custom Haystack component for the Kreuzberg HTTP sidecar |
+| `app/pipelines/csv_converter.py` | `csv` engine — `.csv`/`.tsv` rows → `column: value` text |
 | `app/pipelines/routing_converter.py` | `auto` mode — per-document engine routing (docx signals live in `detectors.py`) |
 | `app/pipelines/vision_llm_converter.py` | `vision-llm` engine — page render → multimodal LLM → Markdown + Mermaid |
 | `app/pipelines/hybrid_diagram_converter.py` | `hybrid-diagram` engine — native docx text + vision-inferred diagram |
@@ -231,8 +296,10 @@ The `task` commands (each runs inside the ingestion container):
 
 ```shell
 task setup          # first-time: docker compose up -d --wait + install dev deps
-task install        # (re)install dev deps (pip install '.[dev]')
-task lint           # run all linters (ruff check + ruff format --check)
+task install        # (re)install dev deps from uv.lock (uv sync --frozen --extra dev)
+task lock           # re-lock after editing pyproject.toml (task lock -- --upgrade to bump versions)
+task lint           # run all linters (ruff check + ruff format --check + basedpyright)
+task lint:types     # type-check (basedpyright; only errors not in .basedpyright/baseline.json fail)
 task lint:fix       # auto-fix lint issues (ruff check --fix)
 task lint:format    # format code (ruff format)
 task test           # run all tests (pytest -v)
@@ -258,12 +325,15 @@ task build:image TAG=v1.0.0                   # with specific tag
 task build:image PLATFORMS=linux/amd64        # single-arch (skips QEMU emulation; much faster for local iteration)
 ```
 
-First run will create a buildx builder (`ingestion-service-builder`) and register QEMU binfmt handlers for cross-arch emulation — idempotent, no-op on subsequent runs.
+First run will create a buildx builder (`ingestion-service-builder`) and register QEMU binfmt handlers for
+cross-arch emulation — idempotent, no-op on subsequent runs.
 
 ## Health Endpoints
 
 - `GET /health` — liveness probe (always 200 if the process is running)
-- `GET /health/ready` — readiness probe. Returns 503 until the Haystack pipeline has finished warming up (the sparse embedder pulls its model from HuggingFace on first boot — ~80 MB) **and** Qdrant is reachable. This keeps Docker / Kubernetes from routing traffic during cold start.
+- `GET /health/ready` — readiness probe. Returns 503 until the Haystack pipeline has finished warming up (the sparse
+  embedder pulls its model from HuggingFace on first boot — ~80 MB) **and** Qdrant is reachable. This keeps Docker /
+  Kubernetes from routing traffic during cold start.
 
 ## API
 
@@ -370,7 +440,7 @@ Fields:
 
 - `file` (required) — the document to extract.
 - `engine` (optional) — one of
-  `pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram`.
+  `pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram | csv`.
   Overrides `EXTRACTION_ENGINE` for this single request. When omitted, the
   configured default is used. `auto` is a routing *mode* for ingest, not a
   concrete converter, so it is **not** accepted here — pick the engine you want
@@ -528,9 +598,9 @@ because they are **contracts with other services**:
 - `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY` (and the
   retrieval agent's parallel value when querying the same data).
 - `EMBEDDING_MODEL`, `EMBEDDING_DIM`, and `EMBEDDING_PREFIX_DOC` must match
-  whatever the retrieval agent uses at query time. e5 needs `passage: ` on
-  documents and `query: ` on queries; bge-m3 takes no prefix; nomic uses
-  `search_document: ` / `search_query: `.
+  whatever the retrieval agent uses at query time. e5 needs `"passage: "` on
+  documents and `"query: "` on queries; bge-m3 takes no prefix; nomic uses
+  `"search_document: "` / `"search_query: "`.
 - `QDRANT_INDEX` is the physical Qdrant collection. Defaults to
   `ingestion_files` — distinct from Open WebUI's legacy multitenancy collections.
 - `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
@@ -549,7 +619,7 @@ because they are **contracts with other services**:
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
   so chunks respect the model's context window — important for e5-large's
-  512-token cap once the `passage: ` prefix is prepended. `markdown` mode is
+  512-token cap once the `"passage: "` prefix is prepended. `markdown` mode is
   structure-aware: it splits on Markdown headings (`#`, `##`, `###`) first,
   merges adjacent sections smaller than `CHUNK_MIN_SIZE` tokens (default 100,
   `0` disables — never past `CHUNK_SIZE`; merged chunks keep the
@@ -590,32 +660,35 @@ because they are **contracts with other services**:
 ## Supported Embedding Models
 
 | Model | Dim | Doc / query prefix | Native sparse |
-|---|---|---|---|
-| `intfloat/multilingual-e5-large` | 1024 | `passage: ` / `query: ` | — |
+| --- | --- | --- | --- |
+| `intfloat/multilingual-e5-large` | 1024 | `"passage: "` / `"query: "` | — |
 | `BAAI/bge-m3` | 1024 | none / none | yes |
 | `jinaai/jina-embeddings-v3` | 1024 | task-specific | — |
-| `nomic-ai/nomic-embed-text-v1.5` | 768 | `search_document: ` / `search_query: ` | — |
+| `nomic-ai/nomic-embed-text-v1.5` | 768 | `"search_document: "` / `"search_query: "` | — |
 
 `EMBEDDING_PROVIDER`:
+
 - `openai-compat` → `OpenAIDocumentEmbedder` (the current `embed.itkdev.dk` path)
 - `fastembed` → `FastembedDocumentEmbedder` (in-process inference; supports BGE-M3 dense)
 - `tei` → routes through `OpenAIDocumentEmbedder` (TEI exposes an OpenAI-compatible endpoint)
 
 `SPARSE_EMBEDDING_PROVIDER`:
+
 - `fastembed` → `FastembedSparseDocumentEmbedder` (BGE-M3 sparse, BM42, SPLADE family)
 - `none` → no sparse stage, dense-only pipeline
 
 ## Extraction Engines
 
 | `EXTRACTION_ENGINE` | Status | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `kreuzberg` | day-one (default) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `pypdf` | day-one | In-process, PDF-only, lightweight |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
 | `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred diagram. Picks its vision profile per document — `diagram-topology` (Mermaid only) for a *vector* flowchart whose labels are Word shapes, or `figure` for a *raster* PNG diagram whose labels are pixels. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
-| `auto` | day-one | Per-document routing: a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
+| `csv` | day-one | In-process (stdlib). `.csv`/`.tsv` rows → `column: value` lines, rows separated by a blank line, so every chunk keeps its column names. Delimiter from Excel `sep=` line, tab for `.tsv`, else sniffed (`;` `,` tab); UTF-16 BOM / UTF-8 / cp1252 fallback; row 1 is the header. Token/markdown splitters cut these docs only between rows, zero overlap |
+| `auto` | day-one | Per-document routing: `.csv`/`.tsv` → `csv`; a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
 
 **`EXTRACTION_ROUTER_DIAGRAM_PROFILE`.** With the default diagram engine (`hybrid-diagram`)
 this is mostly moot — for a real docx the hybrid path picks its own profile

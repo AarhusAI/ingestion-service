@@ -4,7 +4,7 @@ The indexing pipeline is built once at startup and cached with a single fixed
 ``"converter"`` component (``app/pipelines/indexing.py``), so a per-request
 engine decision can only live *inside* a component. ``RoutingConverter`` is that
 component: it builds one inner converter per routable engine up front, inspects
-each source at ``run()`` time via ``detect_engine``, and delegates to the right
+each source at ``run()`` time via ``classify_engine``, and delegates to the right
 inner converter — drawing-heavy ``.docx`` to the diagram engine, everything else
 to the default. It is a drop-in for the ``"converter"`` slot, so the rest of the
 pipeline wiring is unchanged.
@@ -22,7 +22,7 @@ from haystack import Document, component
 
 from app.config import Settings
 from app.log_utils import sanitize_for_log
-from app.pipelines.converters import build_converter
+from app.pipelines.converters import build_converter, meta_for
 from app.pipelines.detectors import RoutingDecision, classify_engine
 from app.pipelines.vision_profiles import KNOWN_PROFILES
 
@@ -53,7 +53,7 @@ class RoutingConverter:
         # Build every engine we might route to up front. A misconfigured /
         # undeployable engine (e.g. an optional dep missing) therefore surfaces
         # at startup, not at the first matching document.
-        routable = {self._default_engine, self._diagram_engine}
+        routable = {self._default_engine, self._diagram_engine, "csv"}
         self._converters = {
             name: build_converter(settings, engine_override=name) for name in routable
         }
@@ -80,9 +80,9 @@ class RoutingConverter:
         docs: list[Document] = []
         for i, source in enumerate(sources):
             decision = self._classify(source)
-            engine = decision.engine
-            converter = self._converters.get(engine) or self._converters[self._default_engine]
-            source_meta = _meta_for(meta, i)
+            engine = decision.engine or self._default_engine
+            converter = self._converters[engine]
+            source_meta = meta_for(meta, i)
             # The diagram route pins the diagram profile; pass it only to a
             # profile-aware converter (a non-vision default engine never gets it).
             pinned_profile = engine == self._diagram_engine and getattr(
@@ -137,17 +137,4 @@ class RoutingConverter:
                 metrics={"error": "detection_failed"},
             )
         engine = (decision.engine or self._default_engine).lower()
-        # Defensive: a detected engine we didn't pre-build falls back to default.
-        if engine not in self._converters:
-            engine = self._default_engine
         return RoutingDecision(engine=engine, signal=decision.signal, metrics=decision.metrics)
-
-
-def _meta_for(meta: dict | list[dict] | None, i: int) -> dict:
-    """Match Haystack convention: ``meta`` may be a single dict applied to all
-    sources, a per-source list, or omitted entirely."""
-    if meta is None:
-        return {}
-    if isinstance(meta, list):
-        return dict(meta[i]) if i < len(meta) else {}
-    return dict(meta)

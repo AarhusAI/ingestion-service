@@ -23,24 +23,16 @@ import os
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.auth import verify_api_key
+from app.config import KNOWN_EXTRACTION_ENGINES
 from app.config import settings as global_settings
 from app.models import ExtractedDocument, ExtractResponse, IngestError
 from app.pipelines.converters import build_converter
 from app.pipelines.vision_profiles import KNOWN_PROFILES
-from app.routes.ingest import _safe_error_detail, stream_upload_to_tempfile
+from app.routes.ingest import _http_error, _safe_error_detail, stream_upload_to_tempfile
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_SUPPORTED_ENGINES = {
-    "pypdf",
-    "docling",
-    "unstructured",
-    "kreuzberg",
-    "vision-llm",
-    "hybrid-diagram",
-}
 
 
 @router.post(
@@ -81,16 +73,10 @@ async def extract(
     # ``file``/``engine``/``profile`` are typed as Optional so FastAPI binds whatever is
     # in the form (even when fields are missing) and the existing 400 INVALID_REQUEST
     # contract is preserved — we'd lose it if we let FastAPI auto-422.
-    engine = _validate_engine(engine)
-    profile = _validate_profile(profile)
+    engine = _validate_choice(engine, KNOWN_EXTRACTION_ENGINES, "engine")
+    profile = _validate_choice(profile, KNOWN_PROFILES, "profile")
     if file is None:
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(
-                error="multipart request missing 'file' field",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
+        raise _http_error(400, "multipart request missing 'file' field")
     local_path = await stream_upload_to_tempfile(file)
 
     try:
@@ -118,35 +104,14 @@ async def extract(
 # ---------------------------------------------------------------------------
 
 
-def _validate_engine(raw) -> str | None:
-    """Return a normalized engine name, ``None`` (= use configured default), or 400."""
+def _validate_choice(raw, allowed: frozenset[str], label: str) -> str | None:
+    """Return the lowercased ``raw`` if in ``allowed``, ``None`` (= configured default), or 400."""
     if raw is None or raw == "":
         return None
     value = str(raw).lower()
-    if value not in _SUPPORTED_ENGINES:
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(
-                error=f"Unknown engine={raw!r} "
-                f"(supported: {' | '.join(sorted(_SUPPORTED_ENGINES))})",
-                code="INVALID_REQUEST",
-            ).model_dump(),
-        )
-    return value
-
-
-def _validate_profile(raw) -> str | None:
-    """Return a normalized profile name, ``None`` (= engine default), or 400."""
-    if raw is None or raw == "":
-        return None
-    value = str(raw).lower()
-    if value not in KNOWN_PROFILES:
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(
-                error=f"Unknown profile={raw!r} (supported: {' | '.join(sorted(KNOWN_PROFILES))})",
-                code="INVALID_REQUEST",
-            ).model_dump(),
+    if value not in allowed:
+        raise _http_error(
+            400, f"Unknown {label}={raw!r} (supported: {' | '.join(sorted(allowed))})"
         )
     return value
 
@@ -169,13 +134,7 @@ def _run_converter(file_path: str, engine: str | None, profile: str | None = Non
         run_kwargs: dict = {"sources": [file_path], "meta": {}}
         if profile is not None:
             if not getattr(converter, "accepts_profile", False):
-                raise HTTPException(
-                    status_code=400,
-                    detail=IngestError(
-                        error="profile is only valid with the vision-llm engine",
-                        code="INVALID_REQUEST",
-                    ).model_dump(),
-                )
+                raise _http_error(400, "profile is only valid with the vision-llm engine")
             run_kwargs["profile"] = profile
         result = converter.run(**run_kwargs)
         return result["documents"]
@@ -183,10 +142,7 @@ def _run_converter(file_path: str, engine: str | None, profile: str | None = Non
         # Optional dep not installed (docling-haystack / unstructured-fileconverter-haystack).
         # The ImportError message names the missing package — that's user-actionable
         # configuration info, not an internal-state leak, so reflect it as-is.
-        raise HTTPException(
-            status_code=400,
-            detail=IngestError(error=str(exc), code="INVALID_REQUEST").model_dump(),
-        ) from exc
+        raise _http_error(400, str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
