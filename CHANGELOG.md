@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-10-06
+
 - Added actions and linted code base.
 - Removed duplicated helpers, unreachable fallbacks and unused error classes/settings from `app/` (~400 lines).
 - Kreuzberg responses with an unrecognized shape now fail with `EXTRACTION_FAILED` instead of silently indexing zero
@@ -80,7 +82,8 @@ in other collections (`file-<id>` plus each KB it belongs to) alive.
 
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
-[unreleased]: https://github.com/AarhusAI/ingestion-service/compare/v0.0.5...HEAD
+[unreleased]: https://github.com/AarhusAI/ingestion-service/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.9
 [0.0.8]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.8
 [0.0.7]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.7
 [0.0.5]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.5
