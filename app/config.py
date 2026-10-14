@@ -373,7 +373,7 @@ class Settings(BaseSettings):
     embedding_max_retries: int = 16
 
     # ----- Sparse embedder (optional) -----
-    enable_sparse_embeddings: bool = False
+    enable_sparse_embeddings: bool = True
     sparse_embedding_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
     # ----- In-process embedder CPU budget -----

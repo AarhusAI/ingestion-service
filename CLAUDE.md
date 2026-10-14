@@ -69,7 +69,8 @@ The pipeline is configurable end-to-end:
   (in-process), or `tei` (also OpenAI-compatible at the wire level). Required. `raise_on_failure=True` is set
   deliberately — see the failure-mode note on oversized chunks.
 - **Sparse embedding**: `ENABLE_SPARSE_EMBEDDINGS=true` adds a `FastembedSparseDocumentEmbedder` stage so each Qdrant
-  point holds both a dense and a sparse named vector. Optional; default off.
+  point holds both a dense and a sparse named vector. Default on; fixed per collection at creation (flipping it against
+  an existing `QDRANT_INDEX` raises `QdrantStoreError` at startup).
 
 ## Build & Run
 

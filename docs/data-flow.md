@@ -19,7 +19,7 @@ configuration as actually deployed by the parent stack**.
 | `EMBEDDING_PROVIDER` | `openai-compat` | `openai-compat` @ `https://embed.itkdev.dk/v1` |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `intfloat/multilingual-e5-large` / `1024` | same |
 | `EMBEDDING_PREFIX_DOC` | `"passage: "` | `"passage: "` |
-| `ENABLE_SPARSE_EMBEDDINGS` | **`false`** | **`true`** |
+| `ENABLE_SPARSE_EMBEDDINGS` | `true` | `true` |
 | `SPARSE_EMBEDDING_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions` | same |
 | `QDRANT_URI` / `QDRANT_INDEX` | `http://qdrant:6333` / `ingestion_files` | same |
 | `S3_*` | MinIO | MinIO (`http://minio:9000`), allowlisted to bucket `openwebui` |
@@ -210,7 +210,7 @@ flowchart LR
     WRITE --> OUT["documents_written (count)"]
 ```
 
-> When `ENABLE_SPARSE_EMBEDDINGS=false` (the standalone default), the sparse
+> When `ENABLE_SPARSE_EMBEDDINGS=false`, the sparse
 > embedder is absent and the dense embedder feeds the guard directly. The guard
 > is the last hop before the writer in both configurations.
 

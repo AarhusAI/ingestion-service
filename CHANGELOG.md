@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+- `ENABLE_SPARSE_EMBEDDINGS` now defaults to `true` (was `false`), matching the parent stack. **Breaking for existing
+  standalone collections created dense-only:** startup fails with `QdrantStoreError` — set
+  `ENABLE_SPARSE_EMBEDDINGS=false` to keep using them, or use a new `QDRANT_INDEX` and reindex. First boot downloads the
+  ~80 MB BM42 model.
+
 - `EXTRACTION_ENGINE` now defaults to `auto` (was `kreuzberg`) in `config.py` and `.env.example`, matching
   `docker-compose.yml` and the parent stack. Ordinary documents still go to `kreuzberg`; diagram-heavy docx route to
   `hybrid-diagram` and need `VISION_LLM_*` — without it they fail with `EXTRACTION_FAILED`. Pin

@@ -100,8 +100,8 @@ Each stage, in order:
   `Setup > Docker > Networking`) to the text they encode — the full heading
   hierarchy steers the vector while the stored chunk content stays clean.
 
-- **Sparse embedder** (optional, `app/pipelines/embedders.py`) — when
-  `ENABLE_SPARSE_EMBEDDINGS=true`, adds a second named vector per chunk
+- **Sparse embedder** (`app/pipelines/embedders.py`) — when
+  `ENABLE_SPARSE_EMBEDDINGS=true` (default), adds a second named vector per chunk
   (BM42 / SPLADE family via fastembed). Lets the retrieval agent use Qdrant's
   native RRF hybrid query at search time instead of client-side BM25. Skipped
   entirely when disabled — the writer sees dense-only chunks.
@@ -565,9 +565,10 @@ because they are **contracts with other services**:
   `"search_document: "` / `"search_query: "`.
 - `QDRANT_INDEX` is the physical Qdrant collection. Defaults to
   `ingestion_files` — distinct from Open WebUI's legacy multitenancy collections.
-- `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
-  the retrieval agent can use Qdrant's native hybrid query (RRF fusion) instead
-  of the legacy client-side BM25.
+- `ENABLE_SPARSE_EMBEDDINGS=true` (default) adds a sparse vector to each Qdrant
+  point so the retrieval agent can use Qdrant's native hybrid query (RRF fusion)
+  instead of the legacy client-side BM25. It's fixed when the collection is
+  created — flipping it against an existing `QDRANT_INDEX` fails at startup.
 - `EMBEDDING_THREADS` caps the ONNX thread pool of the in-process fastembed
   embedders (the sparse BM42 model, and the dense embedder when
   `EMBEDDING_PROVIDER=fastembed`). ONNX otherwise grabs every core, saturating
