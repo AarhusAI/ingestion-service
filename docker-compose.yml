@@ -52,7 +52,6 @@ services:
       LOG_LEVEL_APP: ${LOG_LEVEL_APP:-}
       LOG_FORMAT: ${LOG_FORMAT:-text}
       METRICS_ENABLED: ${METRICS_ENABLED:-true}
-      ENABLE_INSPECTION_API: ${ENABLE_INSPECTION_API:-false}
       # Extraction
       EXTRACTION_ENGINE: ${EXTRACTION_ENGINE:-auto}
       KREUZBERG_URL: ${KREUZBERG_URL:-http://kreuzberg:8000}

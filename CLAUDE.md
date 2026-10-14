@@ -104,10 +104,6 @@ FastAPI app wired in `app/main.py` (lifespan, health probes, router include). En
 - **`GET /health/ready`** — readiness probe. Returns 503 until `init_pipeline()` has finished (the sparse embedder
   downloads ~80 MB from HuggingFace on first boot) **and** Qdrant is reachable. The pipeline-warm gate is what keeps
   Docker / Kubernetes from routing traffic during cold start.
-- **`GET /api/v1/documents/{file_id}/chunks`** — read-only chunk inspection (`app/routes/inspect.py`). Scrolls Qdrant by
-  `meta.file_id` (reusing `_file_id_filter()`) and returns the stored chunks + metadata + the persisted routing
-  decision, for answering "what got indexed, and which engine handled it." Bearer-auth; gated by `ENABLE_INSPECTION_API`
-  (default off → 404).
 - **`DELETE /api/v1/documents/{file_id}`** — removes a file's chunks from Qdrant (`app/routes/delete.py`), the symmetric
   counterpart to `PUT /api/v1/ingest`. Open WebUI calls it on file deletion so vectors don't outlive the file. Delegates
   to `delete_by_file_id()` (run in a worker thread — it takes a lock). Idempotent: unknown/gone `file_id` → 200 with
@@ -178,7 +174,7 @@ Each Qdrant point's payload carries:
         "created_at":      <str, ISO 8601 timestamp from document properties>,
         "languages":       <list[str], ISO 639-1 codes from auto-detection; indexed in Qdrant as a KEYWORD payload index so future filter consumers can MatchAny>,
         # Auto-routing classification (populated only when EXTRACTION_ENGINE=auto;
-        # stamped by RoutingConverter, surfaced by the chunk-inspection endpoint).
+        # stamped by RoutingConverter; inspect via the Qdrant UI).
         "extraction_engine": <str, the engine that actually ran for this doc>,
         "extraction_route":  <dict, {"signal": "textbox|raster|csv|default", ...detector metrics}>,
     }

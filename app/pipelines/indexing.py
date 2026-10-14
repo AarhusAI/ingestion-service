@@ -70,7 +70,7 @@ def _active_settings() -> Settings:
 
 
 def _raw_qdrant_client() -> QdrantClient:
-    """Direct Qdrant client for raw point ops — count / scroll / delete by
+    """Direct Qdrant client for raw point ops — count / delete by
     ``meta.file_id`` payload filter — that ``QdrantDocumentStore``'s public API
     doesn't expose.
 
@@ -80,7 +80,7 @@ def _raw_qdrant_client() -> QdrantClient:
     qdrant-haystack versions (a public ``.client`` in the 8.x line became the
     private ``_client`` in 10.x). The old ``_document_store.client`` usage broke
     on that upgrade and went unnoticed because the overwrite/teardown delete
-    swallows the error and the inspection endpoint is off by default. A
+    swallows the error. A
     settings-built client keeps these helpers stable across such upgrades.
     """
     global _raw_client
@@ -428,7 +428,7 @@ def _delete_ingest_version(file_id: str, version: str) -> None:
 
 def _file_id_filter(file_id: str) -> Filter:
     """The Qdrant filter for every point belonging to one file — the single
-    contract shared by delete, count, and the chunk-inspection scroll."""
+    contract shared by delete and count."""
     return Filter(must=[FieldCondition(key="meta.file_id", match=MatchValue(value=file_id))])
 
 
@@ -455,8 +455,8 @@ def _stale_version_filter(file_id: str, collection_name: str, keep_version: str)
 
 
 def count_chunks_by_file_id(file_id: str) -> int:
-    """Exact count of stored chunks for ``file_id`` (read-only; used by the
-    chunk-inspection endpoint). Raises if the pipeline isn't initialized."""
+    """Exact count of stored chunks for ``file_id`` (read-only). Raises if the
+    pipeline isn't initialized."""
     if _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")
     result = _raw_qdrant_client().count(
@@ -465,26 +465,6 @@ def count_chunks_by_file_id(file_id: str) -> int:
         exact=True,
     )
     return result.count
-
-
-def scroll_chunks_by_file_id(file_id: str, limit: int, offset: str | None = None):
-    """Page through stored chunks for ``file_id`` (read-only).
-
-    Returns ``(points, next_offset)`` straight from Qdrant's cursor-based
-    ``scroll``: ``points`` carry ``payload`` (content + meta), no vectors;
-    ``next_offset`` is the cursor for the next page (``None`` when exhausted).
-    Raises if the pipeline isn't initialized.
-    """
-    if _document_store is None:
-        raise RuntimeError("pipeline not initialized; call init_pipeline() first")
-    return _raw_qdrant_client().scroll(
-        collection_name=_active_settings().qdrant_index,
-        scroll_filter=_file_id_filter(file_id),
-        limit=limit,
-        offset=offset,
-        with_payload=True,
-        with_vectors=False,
-    )
 
 
 def delete_by_file_id(file_id: str) -> int:

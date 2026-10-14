@@ -322,8 +322,7 @@ vectors** — a dense vector (used by the per-tenant HNSW) and a sparse vector
 - `meta.collection_type` — keyword index for admin queries.
 - `meta.languages` — keyword index on the list field (MatchAny-ready).
 - `meta.file_id` — keyword index; every point op (versioned sweep/teardown,
-  `DELETE /api/v1/documents/{file_id}`, chunk-inspection count/scroll) filters
-  on it.
+  `DELETE /api/v1/documents/{file_id}`) filters on it.
 - `meta.ingest_version` — keyword index backing the blue/green overwrite's
   filters.
 

@@ -83,45 +83,6 @@ class DeleteResponse(BaseModel):
     chunks_deleted: int
 
 
-class ChunkView(BaseModel):
-    """One stored chunk, flattened for the inspection endpoint."""
-
-    split_id: int | None = None
-    content_length: int
-    # Present per the ``include_content`` query param: full text, a preview, or
-    # omitted entirely (None).
-    content: str | None = None
-    meta: dict = Field(default_factory=dict)
-
-
-class DocumentChunkStats(BaseModel):
-    """Document-level summary for the inspection endpoint.
-
-    The doc-level fields (engine, route, languages, name) are identical across a
-    document's chunks, so they're read from the first returned chunk.
-    """
-
-    total_chunks: int
-    extraction_engine: str | None = None
-    extraction_route: dict | None = None
-    languages: list[str] | None = None
-    name: str | None = None
-    collection_name: str | None = None
-
-
-class DocumentChunksResponse(BaseModel):
-    """Response body of ``GET /api/v1/documents/{file_id}/chunks``."""
-
-    status: bool = True
-    file_id: str
-    returned: int
-    limit: int
-    # Qdrant cursor for the next page; None when the document is exhausted.
-    next_offset: str | None = None
-    stats: DocumentChunkStats
-    chunks: list[ChunkView]
-
-
 class ExtractedDocument(BaseModel):
     """One Haystack ``Document`` flattened for JSON response.
 

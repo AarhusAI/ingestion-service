@@ -108,11 +108,6 @@ class Settings(BaseSettings):
     # API_KEY (like /api/v1/ingest); when false the endpoint returns 404.
     # Instrumentation always runs regardless; this only gates exposure.
     metrics_enabled: bool = True
-    # Expose the read-only chunk-inspection endpoint
-    # (``GET /api/v1/documents/{file_id}/chunks``). It returns chunk *content*,
-    # so it's opt-in; when false the endpoint returns 404. Bearer-auth applies
-    # either way.
-    enable_inspection_api: bool = False
 
     @field_validator("log_level", "log_level_app")
     @classmethod

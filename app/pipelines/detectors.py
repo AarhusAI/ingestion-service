@@ -133,7 +133,7 @@ def _classify_docx(source: str, settings: Settings) -> RoutingDecision:
     if raster and raster.engine:
         return raster
     # Neither signal fired → default, but surface whatever was measured so the
-    # "why default" is visible to the inspection endpoint / logs.
+    # "why default" is visible in chunk meta / logs.
     merged = {**(textbox.metrics if textbox else {}), **(raster.metrics if raster else {})}
     return RoutingDecision(engine=None, signal="default", metrics=merged)
 

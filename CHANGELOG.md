@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Removed the `SPARSE_EMBEDDING_PROVIDER` setting; `ENABLE_SPARSE_EMBEDDINGS` is now the single sparse switch
   (fastembed is the only provider). `ENABLE_SPARSE_EMBEDDINGS=true` with `SPARSE_EMBEDDING_PROVIDER=none` now enables
   sparse embeddings — set `ENABLE_SPARSE_EMBEDDINGS=false` instead. A leftover `SPARSE_EMBEDDING_PROVIDER` is ignored.
+- Removed the chunk-inspection endpoint (`GET /api/v1/documents/{file_id}/chunks`) and its `ENABLE_INSPECTION_API`
+  setting; inspect stored chunks (and their `extraction_engine`/`extraction_route` meta) in the Qdrant UI instead.
 - Fixed stale `METRICS_ENABLED` comment: `/metrics` requires the `API_KEY` bearer token.
 
 ## [0.0.9] - 2026-10-06

@@ -490,43 +490,6 @@ a `paths=` input socket Haystack's pipeline doesn't currently route to — the
 ingest pipeline has the same limitation; this endpoint will surface it as
 `EXTRACTION_FAILED`.
 
-### `GET /api/v1/documents/{file_id}/chunks`
-
-Read-only chunk inspection — answers "what did this document get split into,
-and which extraction/classification path did it hit?" by reading the stored
-points back from Qdrant (`meta.file_id` filter). Off by default; enable with
-`ENABLE_INSPECTION_API=true`. Same Bearer-token auth as `/api/v1/ingest`; when
-disabled it returns `404`.
-
-Query params: `limit` (1–1000, default 50), `offset` (the `next_offset` cursor
-from a previous response), `include_content` (`false | preview | full`, default
-`preview` — first 200 chars).
-
-```shell
-curl -H "Authorization: Bearer $API_KEY" \
-  "http://localhost:8000/api/v1/documents/abc/chunks?include_content=preview"
-```
-
-```json
-{
-  "status": true,
-  "file_id": "abc",
-  "returned": 42,
-  "limit": 50,
-  "stats": {
-    "total_chunks": 42,
-    "extraction_engine": "hybrid-diagram",
-    "extraction_route": {"signal": "textbox", "ratio": 8.33},
-    "languages": ["da"],
-    "name": "flow.docx",
-    "collection_name": "file-abc"
-  },
-  "chunks": [
-    {"split_id": 0, "content_length": 380, "content": "…", "meta": {"headers": ["Intro"], "page": 1}}
-  ]
-}
-```
-
 ### `DELETE /api/v1/documents/{file_id}`
 
 Removes a file's chunks from Qdrant — the symmetric counterpart to
@@ -574,8 +537,8 @@ Four independently-toggleable layers of insight into how documents are ingested:
 - **Classification visibility** — which engine each document hit, and why, is
   surfaced three ways: the INFO log line, the ingest response's `extraction`
   object, and persisted onto every chunk's `meta` (`extraction_engine`,
-  `extraction_route`) so it's queryable after the fact via the inspection
-  endpoint.
+  `extraction_route`) so it's queryable after the fact in Qdrant (e.g. its
+  web UI).
 - **Prometheus metrics** — `GET /metrics` (set `METRICS_ENABLED=true`, the
   default; `false` → 404). Bearer-authenticated with the same `API_KEY` as
   `/api/v1/ingest` (mirrors retrieval-agent) — the scrape job must send
@@ -586,8 +549,6 @@ Four independently-toggleable layers of insight into how documents are ingested:
   healthy), `ingest_document_bytes`, `extraction_route_total{engine,signal}`,
   and `pipeline_stage_duration_seconds{stage}` (per component — the
   `dense_embedder` stage is the bottleneck under load).
-- **Chunk inspection** — `GET /api/v1/documents/{file_id}/chunks` (above),
-  gated by `ENABLE_INSPECTION_API`.
 
 ## Configuration
 

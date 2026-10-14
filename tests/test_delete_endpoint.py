@@ -1,7 +1,7 @@
 """Delete endpoint (DELETE /api/v1/documents/{file_id}).
 
 ``delete_by_file_id`` is patched at the route-layer symbol (same convention as
-the ingest / inspect endpoint tests) so no real Qdrant is touched.
+the ingest endpoint tests) so no real Qdrant is touched.
 """
 
 from unittest.mock import patch

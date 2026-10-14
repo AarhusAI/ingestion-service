@@ -162,16 +162,6 @@
                 }
             }
         ],
-        "./app/routes/inspect.py": [
-            {
-                "code": "reportOperatorIssue",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 31,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_auth.py": [
             {
                 "code": "reportCallIssue",
