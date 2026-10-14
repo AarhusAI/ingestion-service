@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+- `EXTRACTION_ENGINE` now defaults to `auto` (was `kreuzberg`) in `config.py` and `.env.example`, matching
+  `docker-compose.yml` and the parent stack. Ordinary documents still go to `kreuzberg`; diagram-heavy docx route to
+  `hybrid-diagram` and need `VISION_LLM_*` — without it they fail with `EXTRACTION_FAILED`. Pin
+  `EXTRACTION_ENGINE=kreuzberg` to keep the old behaviour.
+
 - Removed the `SPARSE_EMBEDDING_PROVIDER` setting; `ENABLE_SPARSE_EMBEDDINGS` is now the single sparse switch
   (fastembed is the only provider). `ENABLE_SPARSE_EMBEDDINGS=true` with `SPARSE_EMBEDDING_PROVIDER=none` now enables
   sparse embeddings — set `ENABLE_SPARSE_EMBEDDINGS=false` instead. A leftover `SPARSE_EMBEDDING_PROVIDER` is ignored.

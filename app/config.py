@@ -145,8 +145,8 @@ class Settings(BaseSettings):
     # "auto" enables per-document routing (see app/pipelines/detectors.py +
     # routing_converter.py): drawing-heavy docx go to the diagram engine, the
     # rest to the router default. Any other value pins that single engine
-    # (current behaviour — routing OFF).
-    extraction_engine: str = "kreuzberg"
+    # (routing OFF).
+    extraction_engine: str = "auto"
     kreuzberg_url: str = "http://kreuzberg:8000"
     # Split connect vs read timeout for the Kreuzberg sidecar. A single
     # 60-second blanket value (the previous default) means a sidecar that

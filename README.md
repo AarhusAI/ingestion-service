@@ -235,12 +235,13 @@ Where to start reading when you need to change something:
 - A Qdrant instance (shared with the retrieval agent)
 - An OpenAI-compatible embedding endpoint (e.g. the `embed.itkdev.dk` proxy)
 - An extraction sidecar reachable on the same network: a Kreuzberg API server
-  (`EXTRACTION_ENGINE=kreuzberg` — the value shipped in `.env.example` and the
-  code-level default in `config.py`, so it's what you get out of the box). It
-  ships as a container in the parent stack. See
+  (the `EXTRACTION_ROUTER_DEFAULT` under the default `EXTRACTION_ENGINE=auto`,
+  so ordinary documents go to it out of the box). It ships as a container in
+  the parent stack. See
   [Extraction Engines](#extraction-engines) for the full matrix.
-- **Only for the vision engines** (`vision-llm`, `hybrid-diagram`, or `auto`
-  when it routes a diagram-heavy document): a [Gotenberg](https://gotenberg.dev/)
+- **For the vision engines** (`vision-llm`, `hybrid-diagram`, or the default
+  `auto` when it routes a diagram-heavy document — without them those documents
+  fail with `EXTRACTION_FAILED`; pin `EXTRACTION_ENGINE=kreuzberg` to avoid): a [Gotenberg](https://gotenberg.dev/)
   sidecar for office→PDF rendering — bundled in this repo's own
   `docker-compose.yml`, so `docker compose up` starts it for you — **and** an
   OpenAI-compatible multimodal LLM endpoint (configured via `VISION_LLM_*`).
@@ -253,12 +254,12 @@ Where to start reading when you need to change something:
 ```shell
 cp .env.example .env
 # Edit .env — at minimum set API_KEY and EMBEDDING_API_KEY. The other defaults
-# in .env.example (EXTRACTION_ENGINE=kreuzberg,
+# in .env.example (EXTRACTION_ENGINE=auto,
 # EMBEDDING_API_BASE_URL=https://embed.itkdev.dk/v1, MinIO, Qdrant, and the
 # Kreuzberg sidecar URL) are the working Aarhus dev values; only override
-# when pointing at something else. If you switch to a vision engine
-# (vision-llm / hybrid-diagram / auto), also set VISION_LLM_API_BASE_URL +
-# VISION_LLM_API_KEY.
+# when pointing at something else. auto sends diagram-heavy docx to the vision
+# engine, so also set VISION_LLM_API_BASE_URL + VISION_LLM_API_KEY (or pin
+# EXTRACTION_ENGINE=kreuzberg).
 
 # Generate a secure API key:
 python -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -642,14 +643,14 @@ because they are **contracts with other services**:
 
 | `EXTRACTION_ENGINE` | Status | Notes |
 | --- | --- | --- |
-| `kreuzberg` | day-one (default) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
+| `kreuzberg` | day-one (`auto`'s default route) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `pypdf` | day-one | In-process, PDF-only, lightweight |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
 | `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred diagram. Picks its vision profile per document — `diagram-topology` (Mermaid only) for a *vector* flowchart whose labels are Word shapes, or `figure` for a *raster* PNG diagram whose labels are pixels. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
 | `csv` | day-one | In-process (stdlib). `.csv`/`.tsv` rows → `column: value` lines, rows separated by a blank line, so every chunk keeps its column names. Delimiter from Excel `sep=` line, tab for `.tsv`, else sniffed (`;` `,` tab); UTF-16 BOM / UTF-8 / cp1252 fallback; row 1 is the header. Token/markdown splitters cut these docs only between rows, zero overlap |
-| `auto` | day-one | Per-document routing: `.csv`/`.tsv` → `csv`; a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
+| `auto` | day-one (default) | Per-document routing: `.csv`/`.tsv` → `csv`; a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
 
 **`EXTRACTION_ROUTER_DIAGRAM_PROFILE`.** With the default diagram engine (`hybrid-diagram`)
 this is mostly moot — for a real docx the hybrid path picks its own profile

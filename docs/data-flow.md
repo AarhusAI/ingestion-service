@@ -8,7 +8,7 @@ configuration as actually deployed by the parent stack**.
 
 | Setting | Standalone default | **Effective (parent stack)** |
 | --- | --- | --- |
-| `EXTRACTION_ENGINE` | `kreuzberg` | **`auto`** |
+| `EXTRACTION_ENGINE` | `auto` | `auto` |
 | ↳ `EXTRACTION_ROUTER_DEFAULT` | `kreuzberg` | **`kreuzberg`** |
 | ↳ `EXTRACTION_ROUTER_DIAGRAM_ENGINE` | `hybrid-diagram` | **`hybrid-diagram`** |
 | ↳ `EXTRACTION_ROUTER_DIAGRAM_PROFILE` | `diagram` | **`diagram-topology`** |

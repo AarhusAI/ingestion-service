@@ -12,10 +12,9 @@ Document ingestion service for Open WebUI. A standalone FastAPI microservice tha
 The pipeline is configurable end-to-end:
 
 - **Extraction**: `EXTRACTION_ENGINE` selects `pypdf`, `kreuzberg`, `docling`, `unstructured`, `vision-llm`,
-  `hybrid-diagram`, `csv`, or `auto`. The default is consistent across files: `config.py` falls back to `kreuzberg`,
-  `.env.example` ships `kreuzberg`, and `docker-compose.yml` falls back to `auto` (`${EXTRACTION_ENGINE:-auto}`) whose
-  router default is also `kreuzberg` — so a `cp .env.example .env` Quick Start gives you `kreuzberg`, while an unset var
-  under compose gives `auto` (→ `kreuzberg` for ordinary docs). `kreuzberg` runs as an external HTTP sidecar (a
+  `hybrid-diagram`, `csv`, or `auto`. The default is `auto` everywhere (`config.py`, `.env.example`,
+  `docker-compose.yml`), whose router default is `kreuzberg` — so ordinary docs get `kreuzberg`, and only diagram-heavy
+  docx need the `VISION_LLM_*` endpoint (unset → those fail with `EXTRACTION_FAILED`). `kreuzberg` runs as an external HTTP sidecar (a
   `goldziher/kreuzberg` container in the parent stack at `KREUZBERG_URL`). `pypdf` is in-process. `pypdf` and
   `kreuzberg` ship in the day-one image; `docling`/`unstructured` require optional deps. The factory raises a clear
   `ImportError` at startup if you select an engine whose dep is missing. The `kreuzberg` branch wraps the sidecar via a
