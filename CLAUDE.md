@@ -14,12 +14,13 @@ The pipeline is configurable end-to-end:
 - **Extraction**: `EXTRACTION_ENGINE` selects `pypdf`, `kreuzberg`, `docling`, `unstructured`, `vision-llm`,
   `hybrid-diagram`, `csv`, or `auto`. The default is `auto` everywhere (`config.py`, `.env.example`,
   `docker-compose.yml`), whose router default is `kreuzberg` — so ordinary docs get `kreuzberg`, and only diagram-heavy
-  docx need the `VISION_LLM_*` endpoint (unset → those fail with `EXTRACTION_FAILED`). `kreuzberg` runs as an external HTTP sidecar (a
-  `goldziher/kreuzberg` container in the parent stack at `KREUZBERG_URL`). `pypdf` is in-process. `pypdf` and
-  `kreuzberg` ship in the day-one image; `docling`/`unstructured` require optional deps. The factory raises a clear
-  `ImportError` at startup if you select an engine whose dep is missing. The `kreuzberg` branch wraps the sidecar via a
-  custom `KreuzbergRemoteConverter` Haystack component in `app/pipelines/kreuzberg_converter.py` — no third-party
-  Haystack integration is used, so the dependency surface stays at `httpx` (already required). `vision-llm` renders
+  docx need the `VISION_LLM_*` endpoint (unset → those fail with `EXTRACTION_FAILED`). `kreuzberg` runs as an
+  external HTTP sidecar (a `goldziher/kreuzberg` container in the parent stack at `KREUZBERG_URL`). `pypdf` is
+  in-process. `pypdf` and `kreuzberg` ship in the day-one image; `docling`/`unstructured` require optional deps.
+  The factory raises a clear `ImportError` at startup if you select an engine whose dep is missing. The `kreuzberg`
+  branch wraps the sidecar via a custom `KreuzbergRemoteConverter` Haystack component in
+  `app/pipelines/kreuzberg_converter.py` — no third-party Haystack integration is used, so the dependency surface
+  stays at `httpx` (already required). `vision-llm` renders
   document pages to images (office formats go through the bundled **Gotenberg** sidecar for office→PDF, PDF→PNG is
   local) and reconstructs layout-bound structure (flowcharts, diagrams, scans) into Markdown + a Mermaid graph via an
   OpenAI-compatible multimodal LLM (`VISION_LLM_*`). `hybrid-diagram` pairs native docx text (verbatim from the package
@@ -45,9 +46,9 @@ The pipeline is configurable end-to-end:
   (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units), the custom `HuggingFaceTokenizerSplitter`
   (`CHUNK_SPLIT_BY=token` — wraps
   `langchain_text_splitters.RecursiveCharacterTextSplitter.from_huggingface_tokenizer` so chunk size is measured in the
-  embedding model's actual tokens), and the structure-aware `MarkdownChunker` (`CHUNK_SPLIT_BY=markdown`, the default — two-stage:
-  split on `#`/`##`/`###` headings via `MarkdownHeaderTextSplitter`, merge adjacent sections smaller than
-  `CHUNK_MIN_SIZE` tokens (default 100, `0` disables; never past `CHUNK_SIZE`, merged chunks carry the
+  embedding model's actual tokens), and the structure-aware `MarkdownChunker` (`CHUNK_SPLIT_BY=markdown`, the
+  default — two-stage: split on `#`/`##`/`###` headings via `MarkdownHeaderTextSplitter`, merge adjacent sections
+  smaller than `CHUNK_MIN_SIZE` tokens (default 100, `0` disables; never past `CHUNK_SIZE`, merged chunks carry the
   longest-common-prefix heading path), then token-pack each section that exceeds `CHUNK_SIZE`. Preserves the heading
   hierarchy on each chunk as `meta.headers`, plus the joined string `meta.headers_breadcrumb` — with
   `EMBED_HEADERS_BREADCRUMB=true` (default) all embedders prepend it via `meta_fields_to_embed`, so the vector sees

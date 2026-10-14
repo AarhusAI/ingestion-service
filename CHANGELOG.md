@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+- `docker-compose.yml` fallbacks now match `app/config.py`: `EXTRACTION_ROUTER_DIAGRAM_ENGINE=hybrid-diagram` (was
+  `vision-llm`), `CHUNK_SIZE=400` / `CHUNK_OVERLAP=80` (was `500` / `100`). Only affects a `.env` that doesn't set
+  them. Compose now also passes through `KREUZBERG_MIN_TABLE_COLUMNS`, `EXTRACTION_ROUTER_MIN_BODY_IMAGES`,
+  `EXTRACTION_ROUTER_MIN_IMAGE_EMU`, `EXTRACTION_ROUTER_MIN_IMAGE_WORD_RATIO`, `VISION_LLM_MAX_TOKENS` and
+  `CHUNK_MIN_SIZE`.
+- README: full configuration reference table.
+- Removed the unused `HOST` / `PORT` settings; uvicorn's `0.0.0.0:8000` bind is set in the Dockerfile `CMD`.
+
 - `ENABLE_SPARSE_EMBEDDINGS` now defaults to `true` (was `false`), matching the parent stack. **Breaking for existing
   standalone collections created dense-only:** startup fails with `QdrantStoreError` — set
   `ENABLE_SPARSE_EMBEDDINGS=false` to keep using them, or use a new `QDRANT_INDEX` and reindex. First boot downloads the
