@@ -44,9 +44,9 @@ The pipeline is configurable end-to-end:
   engines is `KNOWN_EXTRACTION_ENGINES` in `app/config.py`.
 - **Chunking**: factory in `app/pipelines/splitter.py` picks between Haystack's `DocumentSplitter`
   (`CHUNK_SPLIT_BY=word|sentence|passage`, counts in those units), the custom `HuggingFaceTokenizerSplitter`
-  (`CHUNK_SPLIT_BY=token`, the default — wraps
+  (`CHUNK_SPLIT_BY=token` — wraps
   `langchain_text_splitters.RecursiveCharacterTextSplitter.from_huggingface_tokenizer` so chunk size is measured in the
-  embedding model's actual tokens), and the structure-aware `MarkdownChunker` (`CHUNK_SPLIT_BY=markdown` — two-stage:
+  embedding model's actual tokens), and the structure-aware `MarkdownChunker` (`CHUNK_SPLIT_BY=markdown`, the default — two-stage:
   split on `#`/`##`/`###` headings via `MarkdownHeaderTextSplitter`, merge adjacent sections smaller than
   `CHUNK_MIN_SIZE` tokens (default 100, `0` disables; never past `CHUNK_SIZE`, merged chunks carry the
   longest-common-prefix heading path), then token-pack each section that exceeds `CHUNK_SIZE`. Preserves the heading

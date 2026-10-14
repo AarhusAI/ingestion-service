@@ -83,7 +83,7 @@ services:
       # Chunking
       CHUNK_SIZE: ${CHUNK_SIZE:-500}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-100}
-      CHUNK_SPLIT_BY: ${CHUNK_SPLIT_BY:-token}
+      CHUNK_SPLIT_BY: ${CHUNK_SPLIT_BY:-markdown}
       TOKENIZER_MODEL: ${TOKENIZER_MODEL:-}
       TOKENIZER_REVISION: ${TOKENIZER_REVISION:-}
       # Dense embedder

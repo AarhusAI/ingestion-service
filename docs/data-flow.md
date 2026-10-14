@@ -12,7 +12,7 @@ configuration as actually deployed by the parent stack**.
 | ↳ `EXTRACTION_ROUTER_DEFAULT` | `kreuzberg` | **`kreuzberg`** |
 | ↳ `EXTRACTION_ROUTER_DIAGRAM_ENGINE` | `hybrid-diagram` | **`hybrid-diagram`** |
 | ↳ `EXTRACTION_ROUTER_DIAGRAM_PROFILE` | `diagram` | **`diagram-topology`** |
-| `CHUNK_SPLIT_BY` | `token` | **`markdown`** |
+| `CHUNK_SPLIT_BY` | `markdown` | `markdown` |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `400` / `80` | `400` / `80` |
 | `CHUNK_MIN_SIZE` | `100` | `100` _(not set → default)_ |
 | `TOKENIZER_MODEL` / `TOKENIZER_REVISION` | _(empty → `EMBEDDING_MODEL`)_ / _(empty)_ | `intfloat/multilingual-e5-large`, pinned revision |

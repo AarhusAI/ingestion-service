@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   sparse embeddings — set `ENABLE_SPARSE_EMBEDDINGS=false` instead. A leftover `SPARSE_EMBEDDING_PROVIDER` is ignored.
 - Removed the chunk-inspection endpoint (`GET /api/v1/documents/{file_id}/chunks`) and its `ENABLE_INSPECTION_API`
   setting; inspect stored chunks (and their `extraction_engine`/`extraction_route` meta) in the Qdrant UI instead.
+- `CHUNK_SPLIT_BY` now defaults to `markdown` (was `token`), matching the parent stack. Changes chunk boundaries for
+  deployments that relied on the old default — set `CHUNK_SPLIT_BY=token` to keep it, or reindex.
 - Fixed stale `METRICS_ENABLED` comment: `/metrics` requires the `API_KEY` bearer token.
 
 ## [0.0.9] - 2026-10-06

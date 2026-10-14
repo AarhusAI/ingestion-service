@@ -298,7 +298,7 @@ class Settings(BaseSettings):
     # and count by approximate units.
     chunk_size: int = 400
     chunk_overlap: int = 80
-    chunk_split_by: str = "token"  # token | markdown | word | sentence | passage
+    chunk_split_by: str = "markdown"  # markdown | token | word | sentence | passage
     # markdown mode only: sections smaller than this many tokens merge into
     # adjacent ones (never past chunk_size), so heading-dense docs don't
     # produce tiny chunks that embed poorly and waste Qdrant points. 0

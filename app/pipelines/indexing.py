@@ -236,8 +236,9 @@ def _build_pipeline(s: Settings, document_store: QdrantDocumentStore) -> Pipelin
     pipeline.add_component(
         "converter", metrics.instrument_stage(_build_converter_for_pipeline(s), "converter")
     )
-    # Token-aware splitter when chunk_split_by="token" (default), Haystack's
-    # word/sentence/passage DocumentSplitter otherwise. See app/pipelines/splitter.py.
+    # Heading-aware MarkdownChunker when chunk_split_by="markdown" (default),
+    # token-aware splitter for "token", Haystack's word/sentence/passage
+    # DocumentSplitter otherwise. See app/pipelines/splitter.py.
     pipeline.add_component("splitter", metrics.instrument_stage(build_splitter(s), "splitter"))
     pipeline.add_component(
         "dense_embedder", metrics.instrument_stage(build_dense_embedder(s), "dense_embedder")

@@ -576,7 +576,7 @@ because they are **contracts with other services**:
   set it explicitly if you CPU-limit the container. `OMP_NUM_THREADS` (default
   `4`) backstops onnxruntime's OpenMP/BLAS kernels and must be an env var (it is
   read at native-library load time, before any Python runs).
-- `CHUNK_SPLIT_BY` selects the chunking strategy. The default `token` mode
+- `CHUNK_SPLIT_BY` selects the chunking strategy (default `markdown`). `token` mode
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
   so chunks respect the model's context window — important for e5-large's
