@@ -208,17 +208,6 @@ def test_build_sparse_disabled_returns_none():
     assert build_sparse_embedder(s) is None
 
 
-def test_build_sparse_provider_none_returns_none():
-    s = _settings(enable_sparse_embeddings=True, sparse_embedding_provider="none")
-    assert build_sparse_embedder(s) is None
-
-
-def test_build_sparse_unknown_provider():
-    s = _settings(enable_sparse_embeddings=True, sparse_embedding_provider="banana")
-    with pytest.raises(ValueError, match="Unknown SPARSE_EMBEDDING_PROVIDER"):
-        build_sparse_embedder(s)
-
-
 def test_build_sparse_embeds_headers_breadcrumb_by_default():
     """The sparse embedder gets the breadcrumb too — heading terms boost
     BM42 keyword matching."""

@@ -104,10 +104,9 @@ class Settings(BaseSettings):
     # text = human-readable single line (the historical format); json = one
     # JSON object per line for Loki / a structured-log pipeline.
     log_format: str = "text"
-    # Expose Prometheus metrics at ``GET /metrics``. Unauthenticated by design
-    # (same trust model as /health — internal network only); when false the
-    # endpoint returns 404. Instrumentation always runs regardless; this only
-    # gates exposure.
+    # Expose Prometheus metrics at ``GET /metrics``. Bearer-authenticated with
+    # API_KEY (like /api/v1/ingest); when false the endpoint returns 404.
+    # Instrumentation always runs regardless; this only gates exposure.
     metrics_enabled: bool = True
     # Expose the read-only chunk-inspection endpoint
     # (``GET /api/v1/documents/{file_id}/chunks``). It returns chunk *content*,
@@ -380,8 +379,6 @@ class Settings(BaseSettings):
 
     # ----- Sparse embedder (optional) -----
     enable_sparse_embeddings: bool = False
-    # fastembed | none
-    sparse_embedding_provider: str = "fastembed"
     sparse_embedding_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
     # ----- In-process embedder CPU budget -----

@@ -672,10 +672,10 @@ because they are **contracts with other services**:
 - `fastembed` → `FastembedDocumentEmbedder` (in-process inference; supports BGE-M3 dense)
 - `tei` → routes through `OpenAIDocumentEmbedder` (TEI exposes an OpenAI-compatible endpoint)
 
-`SPARSE_EMBEDDING_PROVIDER`:
+`ENABLE_SPARSE_EMBEDDINGS`:
 
-- `fastembed` → `FastembedSparseDocumentEmbedder` (BGE-M3 sparse, BM42, SPLADE family)
-- `none` → no sparse stage, dense-only pipeline
+- `true` → `FastembedSparseDocumentEmbedder` with `SPARSE_EMBEDDING_MODEL` (BGE-M3 sparse, BM42, SPLADE family)
+- `false` → no sparse stage, dense-only pipeline
 
 ## Extraction Engines
 

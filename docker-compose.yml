@@ -110,7 +110,6 @@ services:
       EMBEDDING_MAX_RETRIES: ${EMBEDDING_MAX_RETRIES:-16}
       # Sparse embedder
       ENABLE_SPARSE_EMBEDDINGS: ${ENABLE_SPARSE_EMBEDDINGS:-false}
-      SPARSE_EMBEDDING_PROVIDER: ${SPARSE_EMBEDDING_PROVIDER:-fastembed}
       SPARSE_EMBEDDING_MODEL: ${SPARSE_EMBEDDING_MODEL:-Qdrant/bm42-all-minilm-l6-v2-attentions}
       # In-process embedder CPU budget. EMBEDDING_THREADS=0 => auto (leave 2 cores
       # for the event loop so /health stays responsive); OMP_NUM_THREADS backstops
