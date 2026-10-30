@@ -38,6 +38,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.log_utils import sanitize_for_log
+from app.pipelines.docx_text import read_docx_member
 
 log = logging.getLogger(__name__)
 
@@ -142,13 +143,17 @@ def _read_docx_xml(source: str) -> tuple[str, str] | None:
     """Read ``word/document.xml`` (+ optional ``docProps/app.xml``) from a docx.
 
     Returns ``(document_xml, app_xml)`` or ``None`` on any structural failure.
-    Reads ONLY the members it needs — never extractall (zip-bomb safe).
+    Reads ONLY the members it needs, size-capped via ``read_docx_member``.
     """
     try:
         with zipfile.ZipFile(source) as zf:
-            document_xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
+            document_xml = read_docx_member(zf, "word/document.xml").decode(
+                "utf-8", errors="replace"
+            )
             try:
-                app_xml = zf.read("docProps/app.xml").decode("utf-8", errors="replace")
+                app_xml = read_docx_member(zf, "docProps/app.xml").decode(
+                    "utf-8", errors="replace"
+                )
             except KeyError:
                 app_xml = ""
     except (zipfile.BadZipFile, KeyError, OSError, ValueError) as exc:

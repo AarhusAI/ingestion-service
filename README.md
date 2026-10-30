@@ -632,6 +632,7 @@ Defaults are the `app/config.py` values. **Bold** = set or review before product
 | **`API_KEY`** | *(required, ≥32 chars)* | Bearer token for every protected endpoint; must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY` |
 | **`DEBUG`** | `false` | Reflect raw `str(exc)` in error responses. Leaks hostnames/paths — keep `false` in production |
 | `MAX_UPLOAD_BYTES` | `104857600` (100 MB) | Per-request size cap for multipart uploads and S3 fetches |
+| `INGEST_MAX_CONCURRENCY` | `4` | Max ingest pipeline runs in flight per worker; extra requests queue. `0` = unlimited |
 
 #### Logging & observability
 

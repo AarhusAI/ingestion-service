@@ -47,6 +47,7 @@ services:
       API_KEY: "${API_KEY:?API_KEY must be set in .env or .env.local}"
       DEBUG: ${DEBUG:-false}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
+      INGEST_MAX_CONCURRENCY: ${INGEST_MAX_CONCURRENCY:-4}
       # Logging / observability
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_LEVEL_APP: ${LOG_LEVEL_APP:-}

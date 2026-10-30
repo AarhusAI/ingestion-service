@@ -6,9 +6,8 @@ async def test_missing_authorization_header(client):
         "/api/v1/ingest",
         json={"file_id": "x", "filename": "x", "collection_name": "x", "user_id": "x"},
     )
-    # FastAPI's HTTPBearer returns 401 (modern) or 403 (older) — both are
-    # valid "not authenticated" responses; we just want it rejected.
-    assert response.status_code in (401, 403)
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
 
 
 async def test_wrong_api_key(client):
@@ -19,6 +18,18 @@ async def test_wrong_api_key(client):
     )
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid API key"
+
+
+async def test_non_ascii_api_key_is_401_not_500(client):
+    # Raw latin-1 header bytes → Starlette decodes to a non-ASCII str, which
+    # str-based hmac.compare_digest rejects with TypeError (→ 500).
+    response = await client.put(
+        "/api/v1/ingest",
+        json={"file_id": "x", "filename": "x", "collection_name": "x", "user_id": "x"},
+        headers={"Authorization": "Bearer p\xe6ske".encode("latin-1")},
+    )
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
 
 
 def test_settings_rejects_short_api_key(monkeypatch):

@@ -46,10 +46,17 @@ def test_office_to_pdf_http_error_raises_extraction_error(tmp_path):
 
 
 class _FakePage:
-    def __init__(self):
+    def __init__(self, size=(595.0, 842.0)):
         self.closed = False
+        self.size = size
+        self.scale = None
+
+    def get_size(self):
+        return self.size
 
     def render(self, scale):
+        self.scale = scale
+
         def _save(buf, format):
             buf.write(b"PNGDATA")
 
@@ -88,6 +95,18 @@ def test_pdf_to_pngs_respects_max_pages():
     with patch("pypdfium2.PdfDocument", return_value=_FakePdf(5)):
         out = rendering.pdf_to_pngs(b"%PDF", dpi=150, max_pages=2)
     assert out == [b"PNGDATA", b"PNGDATA"]
+
+
+def test_pdf_to_pngs_caps_pixels_on_huge_page():
+    # 14400 pt square (PDF max) at 150 dpi would be 30000² = 900 MP.
+    pdf = _FakePdf(0)
+    big, normal = _FakePage(size=(14400.0, 14400.0)), _FakePage()
+    pdf._pages = [big, normal]
+    with patch("pypdfium2.PdfDocument", return_value=pdf):
+        rendering.pdf_to_pngs(b"%PDF", dpi=150, max_pages=20)
+    assert big.scale is not None
+    assert (14400 * big.scale) ** 2 <= rendering._MAX_PAGE_PIXELS * 1.0001
+    assert normal.scale == 150 / 72
 
 
 # -------------------- render_to_pngs orchestration --------------------

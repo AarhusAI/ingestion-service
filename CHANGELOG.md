@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+- Sparse vectors now use Qdrant's IDF modifier (required for BM42 scoring). New collections get it at creation;
+  existing ones are migrated in place at startup (no reindex).
+- The collection is created at startup, so payload indexes exist from first boot and `DELETE` before the first ingest
+  returns 200 instead of 500.
+- docx zip members over 50 MB (declared size) are refused with `EXTRACTION_FAILED` (zip-bomb guard); PDF page renders
+  are capped at 16 MP.
+- New `INGEST_MAX_CONCURRENCY` (default `4`, `0` = unlimited): pipeline runs in flight per worker.
+- Auth: missing header → 401 with `WWW-Authenticate: Bearer`; non-ASCII tokens → 401 (was 500).
+- Ingest: collection-binding and form-field checks run before the S3 fetch / temp-file spool (no orphaned temp files
+  on 400/403); multipart bodies with a `Content-Length` over the cap get 413 before parsing.
+- Kreuzberg non-JSON responses → `EXTRACTION_FAILED` (was `PIPELINE_FAILED`).
+
 - `docker-compose.yml` fallbacks now match `app/config.py`: `EXTRACTION_ROUTER_DIAGRAM_ENGINE=hybrid-diagram` (was
   `vision-llm`), `CHUNK_SIZE=400` / `CHUNK_OVERLAP=80` (was `500` / `100`). Only affects a `.env` that doesn't set
   them. Compose now also passes through `KREUZBERG_MIN_TABLE_COLUMNS`, `EXTRACTION_ROUTER_MIN_BODY_IMAGES`,
