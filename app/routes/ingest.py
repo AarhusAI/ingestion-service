@@ -39,6 +39,17 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Bounds parallel pipeline runs per worker so they can't exhaust the default
+# to_thread pool that S3 fetches and DELETEs share. 0 = unlimited.
+_ingest_slots = (
+    asyncio.Semaphore(settings.ingest_max_concurrency)
+    if settings.ingest_max_concurrency > 0
+    else None
+)
+
+# Slack over max_upload_bytes for multipart framing + the small form fields.
+_MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+
 
 @router.put(
     "/api/v1/ingest",
@@ -49,6 +60,7 @@ router = APIRouter()
     responses={
         400: {"model": IngestError},
         413: {"model": IngestError},
+        403: {"model": IngestError},
         415: {"model": IngestError},
         500: {"model": IngestError},
     },
@@ -72,12 +84,15 @@ async def _ingest_impl(request: Request) -> IngestResponse:
             body = IngestRequestJSON.model_validate_json(await request.body())
         except ValidationError as exc:
             raise _http_error(400, str(exc)) from exc
+        meta = _meta_from_request(body)
+        # Reject before downloading anything we'd refuse anyway.
+        _validate_collection_binding(meta)
         _check_bucket_allowed(body.s3_bucket)
         # boto3 is synchronous — offload so a slow S3 fetch doesn't stall the
         # event loop (and with it the /health probes).
         local_path = await asyncio.to_thread(_fetch_from_s3, body.s3_bucket, body.s3_key)
-        meta = _meta_from_request(body)
     elif content_type.startswith("multipart/form-data"):
+        _reject_oversized_body(request)
         form = await request.form()
         local_path, meta = await _read_multipart(form)
     else:
@@ -88,14 +103,14 @@ async def _ingest_impl(request: Request) -> IngestResponse:
         )
 
     try:
-        _validate_collection_binding(meta)
         metrics.ingest_document_bytes.observe(_safe_size(local_path))
         # The pipeline run is synchronous and can take tens of seconds
         # (extraction sidecar + embedding endpoint + Qdrant write) — offload
         # so other requests, including the health probes, keep being served.
-        chunks, extraction = await asyncio.to_thread(
-            _run_pipeline_with_error_mapping, local_path, meta
-        )
+        async with _ingest_slots or contextlib.nullcontext():
+            chunks, extraction = await asyncio.to_thread(
+                _run_pipeline_with_error_mapping, local_path, meta
+            )
     finally:
         with contextlib.suppress(OSError):
             os.unlink(local_path)
@@ -183,11 +198,7 @@ async def stream_upload_to_tempfile(upload) -> str:
                 fh.close()
                 with contextlib.suppress(OSError):
                     os.unlink(fh.name)
-                raise _http_error(
-                    413,
-                    f"upload exceeds max_upload_bytes={max_bytes} "
-                    "(configure via MAX_UPLOAD_BYTES)",
-                )
+                raise _http_error(413, _too_large_message(max_bytes))
             fh.write(chunk)
         fh.flush()
     finally:
@@ -196,12 +207,27 @@ async def stream_upload_to_tempfile(upload) -> str:
     return fh.name
 
 
+def _too_large_message(max_bytes: int) -> str:
+    return f"upload exceeds max_upload_bytes={max_bytes} (configure via MAX_UPLOAD_BYTES)"
+
+
+def _reject_oversized_body(request: Request) -> None:
+    """413 on a declared Content-Length over the cap, before ``request.form()``
+    spools the whole body. Missing/garbled header → the streaming cap applies."""
+    try:
+        declared = int(request.headers.get("content-length", ""))
+    except ValueError:
+        return
+    if declared > settings.max_upload_bytes + _MULTIPART_OVERHEAD_BYTES:
+        raise _http_error(413, _too_large_message(settings.max_upload_bytes))
+
+
 async def _read_multipart(form) -> tuple[str, dict[str, Any]]:
     upload = form.get("file")
     if upload is None:
         raise _http_error(400, "multipart request missing 'file' field")
-    path = await stream_upload_to_tempfile(upload)
 
+    # Validate every field before touching disk, so a 400/403 leaves no temp file.
     meta = {
         "file_id": _required_form(form, "file_id"),
         "filename": _required_form(form, "filename"),
@@ -212,6 +238,8 @@ async def _read_multipart(form) -> tuple[str, dict[str, Any]]:
         "name": _required_form(form, "filename"),
         "source": _required_form(form, "filename"),
     }
+    _validate_collection_binding(meta)
+    path = await stream_upload_to_tempfile(upload)
     return path, meta
 
 

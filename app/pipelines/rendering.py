@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import mimetypes
 from functools import lru_cache
 from pathlib import Path
@@ -83,6 +84,10 @@ def office_to_pdf(
     return resp.content
 
 
+# ponytail: fixed per-page pixel cap (~4096², ~64 MB RGBA); a setting if needed
+_MAX_PAGE_PIXELS = 16_000_000
+
+
 def pdf_to_pngs(pdf_bytes: bytes, *, dpi: int = 150, max_pages: int = 20) -> list[bytes]:
     """Rasterize the first ``max_pages`` pages of a PDF to PNG byte blobs.
 
@@ -103,7 +108,10 @@ def pdf_to_pngs(pdf_bytes: bytes, *, dpi: int = 150, max_pages: int = 20) -> lis
         for i in range(page_count):
             page = pdf[i]
             try:
-                pil_image = page.render(scale=scale).to_pil()
+                w, h = page.get_size()  # points
+                area = w * h
+                page_scale = min(scale, math.sqrt(_MAX_PAGE_PIXELS / area)) if area > 0 else scale
+                pil_image = page.render(scale=page_scale).to_pil()
                 buf = io.BytesIO()
                 pil_image.save(buf, format="PNG")
                 pngs.append(buf.getvalue())

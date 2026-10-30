@@ -6,7 +6,12 @@ substring/regex extraction is exercised end-to-end without a sample binary.
 
 import zipfile
 
-from app.pipelines.docx_text import extract_docx_lines
+import pytest
+
+from app.config import settings
+from app.pipelines.detectors import classify_engine
+from app.pipelines.docx_text import MAX_DOCX_MEMBER_BYTES, extract_docx_lines
+from app.pipelines.errors import ExtractionError
 
 _NS = 'xmlns:w="w" xmlns:mc="mc" xmlns:wps="wps" xmlns:v="v"'
 
@@ -149,3 +154,14 @@ def test_zip_without_document_xml_returns_empty_list(tmp_path):
     with zipfile.ZipFile(p, "w") as zf:
         zf.writestr("docProps/app.xml", "<x/>")
     assert extract_docx_lines(str(p)) == []
+
+
+def test_zip_bomb_member_is_refused_without_decompressing(tmp_path):
+    # ~60 KB on disk, declares 60 MB uncompressed.
+    p = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", b"\0" * (MAX_DOCX_MEMBER_BYTES + 10 * 1024 * 1024))
+    with pytest.raises(ExtractionError, match="cap"):
+        extract_docx_lines(str(p))
+    with pytest.raises(ExtractionError, match="cap"):
+        classify_engine(str(p), settings)

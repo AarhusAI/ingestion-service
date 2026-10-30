@@ -3,8 +3,8 @@
 Pulls the document's text straight from ``word/document.xml`` without a full
 Office parse — the motivating case is a swim-lane flowchart whose labels live in
 hundreds of drawing text boxes that plain-text extractors (Tika/POI) never
-reach. We read only that one zip member (never ``extractall`` — zip-bomb safe),
-mirroring the safe single-member read in ``app/pipelines/detectors.py``.
+reach. We read only that one zip member (never ``extractall``), size-capped by
+``read_docx_member`` against zip bombs.
 
 Word stores text as ``<w:t>`` runs grouped into ``<w:p>`` paragraphs; both body
 paragraphs and drawing-text-box paragraphs (nested inside ``<w:txbxContent>`` /
@@ -29,7 +29,27 @@ import re
 import zipfile
 from pathlib import Path
 
+from app.pipelines.errors import ExtractionError
+
 log = logging.getLogger(__name__)
+
+# ponytail: fixed cap; promote to a setting if a real docx hits it
+MAX_DOCX_MEMBER_BYTES = 50 * 1024 * 1024
+
+
+def read_docx_member(zf: zipfile.ZipFile, name: str) -> bytes:
+    """``zf.read(name)`` that refuses members declaring more than the cap.
+
+    ``ZipExtFile`` stops at the declared ``file_size``, so checking the header
+    bounds the decompressed bytes. Missing member still raises ``KeyError``.
+    """
+    size = zf.getinfo(name).file_size
+    if size > MAX_DOCX_MEMBER_BYTES:
+        raise ExtractionError(
+            f"docx member {name} declares {size} bytes, over the {MAX_DOCX_MEMBER_BYTES}-byte cap"
+        )
+    return zf.read(name)
+
 
 # Legacy VML mirror of each DrawingML shape — Word emits both inside
 # <mc:AlternateContent>. Drop the fallback so shape text isn't counted twice.
@@ -60,8 +80,9 @@ def extract_docx_lines(source: str) -> list[str]:
     """
     try:
         with zipfile.ZipFile(source) as zf:
-            # Read ONLY the one member we need — never extractall (zip-bomb safe).
-            document_xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
+            document_xml = read_docx_member(zf, "word/document.xml").decode(
+                "utf-8", errors="replace"
+            )
     except (zipfile.BadZipFile, KeyError, OSError, ValueError) as exc:
         log.debug("docx text extraction failed for %s: %s", Path(source).name, exc)
         return []

@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     # flood /tmp.
     max_upload_bytes: int = 100 * 1024 * 1024
 
+    # Max ingest pipeline runs in flight per uvicorn worker; extra requests
+    # wait. Keeps the shared to_thread pool free for S3 fetches and DELETEs.
+    # 0 = unlimited.
+    ingest_max_concurrency: int = 4
+
     # ----- Extraction -----
     # pypdf | docling | unstructured | kreuzberg | vision-llm | hybrid-diagram | csv | auto
     # kreuzberg runs as an external HTTP sidecar; the rest are in-process.

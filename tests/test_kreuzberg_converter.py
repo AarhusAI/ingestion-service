@@ -146,6 +146,18 @@ def test_run_5xx_raises_extraction_error(tmp_source):
         c.run(sources=[tmp_source])
 
 
+@respx.mock
+def test_run_non_json_body_raises_extraction_error(tmp_source):
+    """A 200 HTML page (e.g. a proxy error page) is an extraction failure."""
+    from app.pipelines.errors import ExtractionError
+
+    respx.post("http://fake-kreuzberg:8000/extract").respond(200, text="<html>bad gateway</html>")
+
+    c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000")
+    with pytest.raises(ExtractionError, match="non-JSON"):
+        c.run(sources=[tmp_source])
+
+
 def test_url_trailing_slash_normalised(tmp_path):
     """Constructor strips a trailing slash so the joined URL is always single-slashed."""
     c = KreuzbergRemoteConverter(kreuzberg_url="http://fake-kreuzberg:8000/")
