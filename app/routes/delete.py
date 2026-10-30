@@ -42,8 +42,8 @@ async def delete_document(
 ):
     if not is_pipeline_ready():
         # Delete only needs the document store, but gating on full readiness
-        # matches the inspection endpoint and keeps the collection guaranteed to
-        # exist (qdrant_setup runs in the same lifespan as init_pipeline).
+        # keeps the collection guaranteed to exist (qdrant_setup runs in the
+        # same lifespan as init_pipeline).
         metrics.delete_requests_total.labels(outcome="error", code="PIPELINE_FAILED").inc()
         raise _http_error(503, "pipeline not warmed up yet", code="PIPELINE_FAILED")
 

@@ -48,8 +48,8 @@ def ensure_payload_indexes() -> None:
     #   yet on the retrieval-agent side, but adding the index now means new
     #   ingests are searchable as soon as the filter call site lands.
     # - meta.file_id: every point op filters on it — the versioned overwrite
-    #   sweep/teardown, DELETE /api/v1/documents/{file_id}, and the
-    #   chunk-inspection count/scroll. Without the index those are full scans.
+    #   sweep/teardown and DELETE /api/v1/documents/{file_id}. Without the
+    #   index those are full scans.
     # - meta.ingest_version: the versioned (blue/green) overwrite filters on it
     #   with must/must_not alongside file_id (see app/pipelines/indexing.py).
     tenant = KeywordIndexParams(type=KeywordIndexType.KEYWORD, is_tenant=True)

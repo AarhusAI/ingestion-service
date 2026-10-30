@@ -84,8 +84,6 @@ class Settings(BaseSettings):
         return self
 
     # ----- Server -----
-    host: str = "0.0.0.0"  # nosec B104 - container-internal bind; Traefik fronts it on the frontend network
-    port: int = 8000
     # Operator-triage switch (NOT a logging dial — see LOG_LEVEL_APP for that).
     # When true, ingest error responses reflect ``str(exc)`` instead of a fixed
     # safe message, so local debugging sees the real failure. Leave false in
@@ -104,16 +102,10 @@ class Settings(BaseSettings):
     # text = human-readable single line (the historical format); json = one
     # JSON object per line for Loki / a structured-log pipeline.
     log_format: str = "text"
-    # Expose Prometheus metrics at ``GET /metrics``. Unauthenticated by design
-    # (same trust model as /health — internal network only); when false the
-    # endpoint returns 404. Instrumentation always runs regardless; this only
-    # gates exposure.
+    # Expose Prometheus metrics at ``GET /metrics``. Bearer-authenticated with
+    # API_KEY (like /api/v1/ingest); when false the endpoint returns 404.
+    # Instrumentation always runs regardless; this only gates exposure.
     metrics_enabled: bool = True
-    # Expose the read-only chunk-inspection endpoint
-    # (``GET /api/v1/documents/{file_id}/chunks``). It returns chunk *content*,
-    # so it's opt-in; when false the endpoint returns 404. Bearer-auth applies
-    # either way.
-    enable_inspection_api: bool = False
 
     @field_validator("log_level", "log_level_app")
     @classmethod
@@ -151,8 +143,8 @@ class Settings(BaseSettings):
     # "auto" enables per-document routing (see app/pipelines/detectors.py +
     # routing_converter.py): drawing-heavy docx go to the diagram engine, the
     # rest to the router default. Any other value pins that single engine
-    # (current behaviour — routing OFF).
-    extraction_engine: str = "kreuzberg"
+    # (routing OFF).
+    extraction_engine: str = "auto"
     kreuzberg_url: str = "http://kreuzberg:8000"
     # Split connect vs read timeout for the Kreuzberg sidecar. A single
     # 60-second blanket value (the previous default) means a sidecar that
@@ -304,7 +296,7 @@ class Settings(BaseSettings):
     # and count by approximate units.
     chunk_size: int = 400
     chunk_overlap: int = 80
-    chunk_split_by: str = "token"  # token | markdown | word | sentence | passage
+    chunk_split_by: str = "markdown"  # markdown | token | word | sentence | passage
     # markdown mode only: sections smaller than this many tokens merge into
     # adjacent ones (never past chunk_size), so heading-dense docs don't
     # produce tiny chunks that embed poorly and waste Qdrant points. 0
@@ -379,9 +371,7 @@ class Settings(BaseSettings):
     embedding_max_retries: int = 16
 
     # ----- Sparse embedder (optional) -----
-    enable_sparse_embeddings: bool = False
-    # fastembed | none
-    sparse_embedding_provider: str = "fastembed"
+    enable_sparse_embeddings: bool = True
     sparse_embedding_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
     # ----- In-process embedder CPU budget -----

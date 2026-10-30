@@ -265,7 +265,7 @@ def test_logs_routing_decision_at_info(caplog):
 
 def test_stamps_routing_decision_onto_document_meta():
     """The router stamps the resolved engine + route (signal/metrics) onto each
-    output document's meta so it flows to Qdrant and the inspection endpoint."""
+    output document's meta so it flows to Qdrant."""
     _default, _vision, build = _fakes()
     decision = RoutingDecision("vision-llm", "textbox", {"textboxes": 50, "ratio": 8.33})
     with (

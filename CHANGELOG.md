@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+- `docker-compose.yml` fallbacks now match `app/config.py`: `EXTRACTION_ROUTER_DIAGRAM_ENGINE=hybrid-diagram` (was
+  `vision-llm`), `CHUNK_SIZE=400` / `CHUNK_OVERLAP=80` (was `500` / `100`). Only affects a `.env` that doesn't set
+  them. Compose now also passes through `KREUZBERG_MIN_TABLE_COLUMNS`, `EXTRACTION_ROUTER_MIN_BODY_IMAGES`,
+  `EXTRACTION_ROUTER_MIN_IMAGE_EMU`, `EXTRACTION_ROUTER_MIN_IMAGE_WORD_RATIO`, `VISION_LLM_MAX_TOKENS` and
+  `CHUNK_MIN_SIZE`.
+- README: full configuration reference table.
+- Removed the unused `HOST` / `PORT` settings; uvicorn's `0.0.0.0:8000` bind is set in the Dockerfile `CMD`.
+
+- `ENABLE_SPARSE_EMBEDDINGS` now defaults to `true` (was `false`), matching the parent stack. **Breaking for existing
+  standalone collections created dense-only:** startup fails with `QdrantStoreError` — set
+  `ENABLE_SPARSE_EMBEDDINGS=false` to keep using them, or use a new `QDRANT_INDEX` and reindex. First boot downloads the
+  ~80 MB BM42 model.
+
+- `EXTRACTION_ENGINE` now defaults to `auto` (was `kreuzberg`) in `config.py` and `.env.example`, matching
+  `docker-compose.yml` and the parent stack. Ordinary documents still go to `kreuzberg`; diagram-heavy docx route to
+  `hybrid-diagram` and need `VISION_LLM_*` — without it they fail with `EXTRACTION_FAILED`. Pin
+  `EXTRACTION_ENGINE=kreuzberg` to keep the old behaviour.
+
+- Removed the `SPARSE_EMBEDDING_PROVIDER` setting; `ENABLE_SPARSE_EMBEDDINGS` is now the single sparse switch
+  (fastembed is the only provider). `ENABLE_SPARSE_EMBEDDINGS=true` with `SPARSE_EMBEDDING_PROVIDER=none` now enables
+  sparse embeddings — set `ENABLE_SPARSE_EMBEDDINGS=false` instead. A leftover `SPARSE_EMBEDDING_PROVIDER` is ignored.
+- Removed the chunk-inspection endpoint (`GET /api/v1/documents/{file_id}/chunks`) and its `ENABLE_INSPECTION_API`
+  setting; inspect stored chunks (and their `extraction_engine`/`extraction_route` meta) in the Qdrant UI instead.
+- `CHUNK_SPLIT_BY` now defaults to `markdown` (was `token`), matching the parent stack. Changes chunk boundaries for
+  deployments that relied on the old default — set `CHUNK_SPLIT_BY=token` to keep it, or reindex.
+- Fixed stale `METRICS_ENABLED` comment: `/metrics` requires the `API_KEY` bearer token.
+
+## [0.0.9] - 2026-10-06
+
 - Added actions and linted code base.
 - Removed duplicated helpers, unreachable fallbacks and unused error classes/settings from `app/` (~400 lines).
 - Kreuzberg responses with an unrecognized shape now fail with `EXTRACTION_FAILED` instead of silently indexing zero
@@ -80,7 +109,8 @@ in other collections (`file-<id>` plus each KB it belongs to) alive.
 
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
-[unreleased]: https://github.com/AarhusAI/ingestion-service/compare/v0.0.5...HEAD
+[unreleased]: https://github.com/AarhusAI/ingestion-service/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.9
 [0.0.8]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.8
 [0.0.7]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.7
 [0.0.5]: https://github.com/AarhusAI/ingestion-service/releases/tag/0.0.5

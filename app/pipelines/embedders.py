@@ -129,27 +129,17 @@ def build_sparse_embedder(settings: Settings):
     if not settings.enable_sparse_embeddings:
         return None
 
-    provider = settings.sparse_embedding_provider.lower()
-    if provider == "none":
-        return None
+    from haystack_integrations.components.embedders.fastembed import (
+        FastembedSparseDocumentEmbedder,
+    )
 
-    if provider == "fastembed":
-        from haystack_integrations.components.embedders.fastembed import (
-            FastembedSparseDocumentEmbedder,
-        )
-
-        # See build_dense_embedder for why threads/parallel are pinned: the
-        # sparse BM42 model is the CPU bottleneck that otherwise saturates all
-        # cores and makes /health time out during ingestion.
-        return FastembedSparseDocumentEmbedder(
-            model=settings.sparse_embedding_model,
-            threads=settings.resolved_embedding_threads(),
-            parallel=1,
-            # Heading terms boost BM42 keyword matching too.
-            meta_fields_to_embed=_meta_fields_to_embed(settings),
-        )
-
-    raise ValueError(
-        f"Unknown SPARSE_EMBEDDING_PROVIDER={settings.sparse_embedding_provider!r} "
-        "(supported: fastembed | none)"
+    # See build_dense_embedder for why threads/parallel are pinned: the
+    # sparse BM42 model is the CPU bottleneck that otherwise saturates all
+    # cores and makes /health time out during ingestion.
+    return FastembedSparseDocumentEmbedder(
+        model=settings.sparse_embedding_model,
+        threads=settings.resolved_embedding_threads(),
+        parallel=1,
+        # Heading terms boost BM42 keyword matching too.
+        meta_fields_to_embed=_meta_fields_to_embed(settings),
     )

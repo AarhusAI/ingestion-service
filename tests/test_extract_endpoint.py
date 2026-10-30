@@ -29,7 +29,7 @@ async def test_extract_happy_path_uses_configured_engine(client, api_headers):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] is True
-    assert body["engine"] == "kreuzberg"  # the default in app.config.Settings
+    assert body["engine"] == "kreuzberg"  # pinned by tests/conftest.py
     assert body["documents"] == [{"content": "# Heading\n...", "meta": {"page": 1}}]
     # engine_override stays None when client omits the field
     _, kwargs = build_mock.call_args

@@ -8,18 +8,18 @@ configuration as actually deployed by the parent stack**.
 
 | Setting | Standalone default | **Effective (parent stack)** |
 | --- | --- | --- |
-| `EXTRACTION_ENGINE` | `kreuzberg` | **`auto`** |
+| `EXTRACTION_ENGINE` | `auto` | `auto` |
 | ↳ `EXTRACTION_ROUTER_DEFAULT` | `kreuzberg` | **`kreuzberg`** |
 | ↳ `EXTRACTION_ROUTER_DIAGRAM_ENGINE` | `hybrid-diagram` | **`hybrid-diagram`** |
 | ↳ `EXTRACTION_ROUTER_DIAGRAM_PROFILE` | `diagram` | **`diagram-topology`** |
-| `CHUNK_SPLIT_BY` | `token` | **`markdown`** |
+| `CHUNK_SPLIT_BY` | `markdown` | `markdown` |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `400` / `80` | `400` / `80` |
 | `CHUNK_MIN_SIZE` | `100` | `100` _(not set → default)_ |
 | `TOKENIZER_MODEL` / `TOKENIZER_REVISION` | _(empty → `EMBEDDING_MODEL`)_ / _(empty)_ | `intfloat/multilingual-e5-large`, pinned revision |
 | `EMBEDDING_PROVIDER` | `openai-compat` | `openai-compat` @ `https://embed.itkdev.dk/v1` |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `intfloat/multilingual-e5-large` / `1024` | same |
 | `EMBEDDING_PREFIX_DOC` | `"passage: "` | `"passage: "` |
-| `ENABLE_SPARSE_EMBEDDINGS` | **`false`** | **`true`** |
+| `ENABLE_SPARSE_EMBEDDINGS` | `true` | `true` |
 | `SPARSE_EMBEDDING_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions` | same |
 | `QDRANT_URI` / `QDRANT_INDEX` | `http://qdrant:6333` / `ingestion_files` | same |
 | `S3_*` | MinIO | MinIO (`http://minio:9000`), allowlisted to bucket `openwebui` |
@@ -210,7 +210,7 @@ flowchart LR
     WRITE --> OUT["documents_written (count)"]
 ```
 
-> When `ENABLE_SPARSE_EMBEDDINGS=false` (the standalone default), the sparse
+> When `ENABLE_SPARSE_EMBEDDINGS=false`, the sparse
 > embedder is absent and the dense embedder feeds the guard directly. The guard
 > is the last hop before the writer in both configurations.
 
@@ -322,8 +322,7 @@ vectors** — a dense vector (used by the per-tenant HNSW) and a sparse vector
 - `meta.collection_type` — keyword index for admin queries.
 - `meta.languages` — keyword index on the list field (MatchAny-ready).
 - `meta.file_id` — keyword index; every point op (versioned sweep/teardown,
-  `DELETE /api/v1/documents/{file_id}`, chunk-inspection count/scroll) filters
-  on it.
+  `DELETE /api/v1/documents/{file_id}`) filters on it.
 - `meta.ingest_version` — keyword index backing the blue/green overwrite's
   filters.
 

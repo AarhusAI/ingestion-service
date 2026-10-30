@@ -81,8 +81,8 @@ Each stage, in order:
 
 - **Splitter** (`app/pipelines/splitter.py`) — slices documents into chunks.
   Three factory branches selected by `CHUNK_SPLIT_BY`: `HuggingFaceTokenizerSplitter`
-  (token mode, default — measures chunk size in the embedding model's actual
-  tokens), `MarkdownChunker` (markdown mode — splits on heading hierarchy first,
+  (token mode — measures chunk size in the embedding model's actual
+  tokens), `MarkdownChunker` (markdown mode, default — splits on heading hierarchy first,
   merges sections smaller than `CHUNK_MIN_SIZE` tokens into their neighbors,
   then token-packs sections; attaches the `meta.headers` breadcrumb plus its
   joined string form `meta.headers_breadcrumb`), or Haystack's
@@ -100,8 +100,8 @@ Each stage, in order:
   `Setup > Docker > Networking`) to the text they encode — the full heading
   hierarchy steers the vector while the stored chunk content stays clean.
 
-- **Sparse embedder** (optional, `app/pipelines/embedders.py`) — when
-  `ENABLE_SPARSE_EMBEDDINGS=true`, adds a second named vector per chunk
+- **Sparse embedder** (`app/pipelines/embedders.py`) — when
+  `ENABLE_SPARSE_EMBEDDINGS=true` (default), adds a second named vector per chunk
   (BM42 / SPLADE family via fastembed). Lets the retrieval agent use Qdrant's
   native RRF hybrid query at search time instead of client-side BM25. Skipped
   entirely when disabled — the writer sees dense-only chunks.
@@ -223,7 +223,7 @@ Where to start reading when you need to change something:
 | `app/pipelines/rendering.py` | Page rendering — office→PDF via Gotenberg, PDF→PNG local |
 | `app/pipelines/splitter.py` | Splitter factory + custom HF tokenizer / Markdown chunkers |
 | `app/pipelines/embedders.py` | Dense (required) + sparse (optional) embedder factories |
-| `app/services/qdrant_setup.py` | Payload-index bootstrap (`collection_name`, `collection_type`, `languages`) |
+| `app/services/qdrant_setup.py` | Payload-index bootstrap (`collection_name`, `collection_type`, `languages`, `file_id`, `ingest_version`) |
 | `app/services/s3.py` | S3 fetch for JSON-mode ingest requests |
 | `app/config.py` | pydantic-settings env binding (single source of truth for config) |
 | `app/models.py` | Request / response Pydantic schemas |
@@ -235,12 +235,13 @@ Where to start reading when you need to change something:
 - A Qdrant instance (shared with the retrieval agent)
 - An OpenAI-compatible embedding endpoint (e.g. the `embed.itkdev.dk` proxy)
 - An extraction sidecar reachable on the same network: a Kreuzberg API server
-  (`EXTRACTION_ENGINE=kreuzberg` — the value shipped in `.env.example` and the
-  code-level default in `config.py`, so it's what you get out of the box). It
-  ships as a container in the parent stack. See
+  (the `EXTRACTION_ROUTER_DEFAULT` under the default `EXTRACTION_ENGINE=auto`,
+  so ordinary documents go to it out of the box). It ships as a container in
+  the parent stack. See
   [Extraction Engines](#extraction-engines) for the full matrix.
-- **Only for the vision engines** (`vision-llm`, `hybrid-diagram`, or `auto`
-  when it routes a diagram-heavy document): a [Gotenberg](https://gotenberg.dev/)
+- **For the vision engines** (`vision-llm`, `hybrid-diagram`, or the default
+  `auto` when it routes a diagram-heavy document — without them those documents
+  fail with `EXTRACTION_FAILED`; pin `EXTRACTION_ENGINE=kreuzberg` to avoid): a [Gotenberg](https://gotenberg.dev/)
   sidecar for office→PDF rendering — bundled in this repo's own
   `docker-compose.yml`, so `docker compose up` starts it for you — **and** an
   OpenAI-compatible multimodal LLM endpoint (configured via `VISION_LLM_*`).
@@ -253,12 +254,12 @@ Where to start reading when you need to change something:
 ```shell
 cp .env.example .env
 # Edit .env — at minimum set API_KEY and EMBEDDING_API_KEY. The other defaults
-# in .env.example (EXTRACTION_ENGINE=kreuzberg,
+# in .env.example (EXTRACTION_ENGINE=auto,
 # EMBEDDING_API_BASE_URL=https://embed.itkdev.dk/v1, MinIO, Qdrant, and the
 # Kreuzberg sidecar URL) are the working Aarhus dev values; only override
-# when pointing at something else. If you switch to a vision engine
-# (vision-llm / hybrid-diagram / auto), also set VISION_LLM_API_BASE_URL +
-# VISION_LLM_API_KEY.
+# when pointing at something else. auto sends diagram-heavy docx to the vision
+# engine, so also set VISION_LLM_API_BASE_URL + VISION_LLM_API_KEY (or pin
+# EXTRACTION_ENGINE=kreuzberg).
 
 # Generate a secure API key:
 python -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -490,43 +491,6 @@ a `paths=` input socket Haystack's pipeline doesn't currently route to — the
 ingest pipeline has the same limitation; this endpoint will surface it as
 `EXTRACTION_FAILED`.
 
-### `GET /api/v1/documents/{file_id}/chunks`
-
-Read-only chunk inspection — answers "what did this document get split into,
-and which extraction/classification path did it hit?" by reading the stored
-points back from Qdrant (`meta.file_id` filter). Off by default; enable with
-`ENABLE_INSPECTION_API=true`. Same Bearer-token auth as `/api/v1/ingest`; when
-disabled it returns `404`.
-
-Query params: `limit` (1–1000, default 50), `offset` (the `next_offset` cursor
-from a previous response), `include_content` (`false | preview | full`, default
-`preview` — first 200 chars).
-
-```shell
-curl -H "Authorization: Bearer $API_KEY" \
-  "http://localhost:8000/api/v1/documents/abc/chunks?include_content=preview"
-```
-
-```json
-{
-  "status": true,
-  "file_id": "abc",
-  "returned": 42,
-  "limit": 50,
-  "stats": {
-    "total_chunks": 42,
-    "extraction_engine": "hybrid-diagram",
-    "extraction_route": {"signal": "textbox", "ratio": 8.33},
-    "languages": ["da"],
-    "name": "flow.docx",
-    "collection_name": "file-abc"
-  },
-  "chunks": [
-    {"split_id": 0, "content_length": 380, "content": "…", "meta": {"headers": ["Intro"], "page": 1}}
-  ]
-}
-```
-
 ### `DELETE /api/v1/documents/{file_id}`
 
 Removes a file's chunks from Qdrant — the symmetric counterpart to
@@ -558,7 +522,7 @@ Returns `503` (`PIPELINE_FAILED`) until the pipeline has warmed up, and `500`
 
 ## Observability
 
-Four independently-toggleable layers of insight into how documents are ingested:
+Four layers of insight into how documents are ingested:
 
 - **Log verbosity** — `LOG_LEVEL` (`DEBUG | INFO | WARNING | ERROR | CRITICAL`)
   is the primary dial, applied to the root logger. The per-document routing
@@ -574,8 +538,8 @@ Four independently-toggleable layers of insight into how documents are ingested:
 - **Classification visibility** — which engine each document hit, and why, is
   surfaced three ways: the INFO log line, the ingest response's `extraction`
   object, and persisted onto every chunk's `meta` (`extraction_engine`,
-  `extraction_route`) so it's queryable after the fact via the inspection
-  endpoint.
+  `extraction_route`) so it's queryable after the fact in Qdrant (e.g. its
+  web UI).
 - **Prometheus metrics** — `GET /metrics` (set `METRICS_ENABLED=true`, the
   default; `false` → 404). Bearer-authenticated with the same `API_KEY` as
   `/api/v1/ingest` (mirrors retrieval-agent) — the scrape job must send
@@ -586,14 +550,13 @@ Four independently-toggleable layers of insight into how documents are ingested:
   healthy), `ingest_document_bytes`, `extraction_route_total{engine,signal}`,
   and `pipeline_stage_duration_seconds{stage}` (per component — the
   `dense_embedder` stage is the bottleneck under load).
-- **Chunk inspection** — `GET /api/v1/documents/{file_id}/chunks` (above),
-  gated by `ENABLE_INSPECTION_API`.
 
 ## Configuration
 
-All config is via environment variables loaded by pydantic-settings. See
-`.env.example` for the full list. The settings that matter beyond their docstrings
-because they are **contracts with other services**:
+All config is via environment variables loaded by pydantic-settings
+(`app/config.py`). Every setting is listed in the [reference](#reference) below;
+`.env.example` carries the longer rationale per setting. The settings that
+matter beyond their docstrings because they are **contracts with other services**:
 
 - `API_KEY` must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY` (and the
   retrieval agent's parallel value when querying the same data).
@@ -603,9 +566,10 @@ because they are **contracts with other services**:
   `"search_document: "` / `"search_query: "`.
 - `QDRANT_INDEX` is the physical Qdrant collection. Defaults to
   `ingestion_files` — distinct from Open WebUI's legacy multitenancy collections.
-- `ENABLE_SPARSE_EMBEDDINGS=true` adds a sparse vector to each Qdrant point so
-  the retrieval agent can use Qdrant's native hybrid query (RRF fusion) instead
-  of the legacy client-side BM25.
+- `ENABLE_SPARSE_EMBEDDINGS=true` (default) adds a sparse vector to each Qdrant
+  point so the retrieval agent can use Qdrant's native hybrid query (RRF fusion)
+  instead of the legacy client-side BM25. It's fixed when the collection is
+  created — flipping it against an existing `QDRANT_INDEX` fails at startup.
 - `EMBEDDING_THREADS` caps the ONNX thread pool of the in-process fastembed
   embedders (the sparse BM42 model, and the dense embedder when
   `EMBEDDING_PROVIDER=fastembed`). ONNX otherwise grabs every core, saturating
@@ -615,7 +579,7 @@ because they are **contracts with other services**:
   set it explicitly if you CPU-limit the container. `OMP_NUM_THREADS` (default
   `4`) backstops onnxruntime's OpenMP/BLAS kernels and must be an env var (it is
   read at native-library load time, before any Python runs).
-- `CHUNK_SPLIT_BY` selects the chunking strategy. The default `token` mode
+- `CHUNK_SPLIT_BY` selects the chunking strategy (default `markdown`). `token` mode
   measures `CHUNK_SIZE` / `CHUNK_OVERLAP` in the embedding model's actual
   HuggingFace tokens (via `RecursiveCharacterTextSplitter.from_huggingface_tokenizer`)
   so chunks respect the model's context window — important for e5-large's
@@ -657,6 +621,121 @@ because they are **contracts with other services**:
   not a soft failure: the endpoint rejects the **entire batch** (32 chunks) when
   one input is oversized.
 
+### Reference
+
+Defaults are the `app/config.py` values. **Bold** = set or review before production.
+
+#### Auth & server
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| **`API_KEY`** | *(required, ≥32 chars)* | Bearer token for every protected endpoint; must equal Open WebUI's `EXTERNAL_INGESTION_API_KEY` |
+| **`DEBUG`** | `false` | Reflect raw `str(exc)` in error responses. Leaks hostnames/paths — keep `false` in production |
+| `MAX_UPLOAD_BYTES` | `104857600` (100 MB) | Per-request size cap for multipart uploads and S3 fetches |
+
+#### Logging & observability
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | Root log level (third-party libs follow it) |
+| `LOG_LEVEL_APP` | *(empty = inherit)* | Override for the `app.*` loggers only |
+| `LOG_FORMAT` | `text` | `text` or `json` (one object per line, for Loki) |
+| `METRICS_ENABLED` | `true` | Expose `GET /metrics` (bearer-auth); `false` → 404 |
+
+#### Extraction
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EXTRACTION_ENGINE` | `auto` | Engine or `auto` routing — see [Extraction Engines](#extraction-engines) |
+| `KREUZBERG_URL` | `http://kreuzberg:8000` | Kreuzberg sidecar |
+| `KREUZBERG_CONNECT_TIMEOUT` / `KREUZBERG_READ_TIMEOUT` | `5.0` / `60.0` | Fail fast on connect; extraction is CPU-bound, so read is long |
+| `KREUZBERG_TLS_VERIFY` | `true` | Explicit so `verify=False` can't be introduced silently |
+| `KREUZBERG_MIN_TABLE_COLUMNS` | `2` | Drop detected "tables" narrower than this (the detector misfires on prose, emitting 1-column duplicates). `1` keeps all |
+
+**Auto-routing** (only when `EXTRACTION_ENGINE=auto`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EXTRACTION_ROUTER_DEFAULT` | `kreuzberg` | Engine for ordinary documents |
+| `EXTRACTION_ROUTER_DIAGRAM_ENGINE` | `hybrid-diagram` | Engine for diagram-heavy docx |
+| `EXTRACTION_ROUTER_DIAGRAM_PROFILE` | `diagram` | Vision profile for the diagram route (mostly moot with `hybrid-diagram`, see below) |
+| `EXTRACTION_ROUTER_MIN_TEXTBOXES` | `20` | Textbox floor so a few callouts don't trigger the diagram route |
+| `EXTRACTION_ROUTER_DRAWING_RATIO` | `2.0` | Textbox text must be ≥ this × body words |
+| `EXTRACTION_ROUTER_MIN_BODY_IMAGES` | `1` | Raster signal: minimum body images |
+| `EXTRACTION_ROUTER_MIN_IMAGE_EMU` | `1500000000000` (≈1.79 in²) | Raster signal: largest image's display-area floor |
+| `EXTRACTION_ROUTER_MIN_IMAGE_WORD_RATIO` | `0.0` (off) | Raster signal: optional image-area / body-words guard against decorative photos |
+
+**Vision LLM** (`vision-llm`, `hybrid-diagram`, and `auto`'s diagram route)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| **`VISION_LLM_API_BASE_URL`** / `VISION_LLM_API_KEY` | *(empty)* | OpenAI-compatible multimodal endpoint. Empty → diagram documents fail with `EXTRACTION_FAILED` under `auto` |
+| `VISION_LLM_MODEL` | `gemma4-nvfp4` | Model id the endpoint serves |
+| `VISION_LLM_CONNECT_TIMEOUT` / `VISION_LLM_READ_TIMEOUT` | `5.0` / `180.0` | A quantized VLM over several page images is slow |
+| `VISION_LLM_DPI` | `150` | Page render resolution (legibility vs. image tokens) |
+| `VISION_LLM_MAX_PAGES` | `20` | Hard page cap — bounds cost and quality drift |
+| `VISION_LLM_MAX_TOKENS` | `16384` | Output cap; hitting it fails the extraction instead of indexing truncated Markdown |
+| `VISION_LLM_TLS_VERIFY` | `true` | As for Kreuzberg |
+| `VISION_LLM_LANGUAGE_HINT` | `Danish` | Keeps the model from translating the source text |
+| `VISION_LLM_PROFILE` | `general` | Default profile for forced vision use: `diagram`, `general`, `ocr` |
+
+**Gotenberg** (office → PDF for the vision engines)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GOTENBERG_URL` | `http://gotenberg:3000` | Headless-LibreOffice sidecar |
+| `GOTENBERG_CONNECT_TIMEOUT` / `GOTENBERG_READ_TIMEOUT` | `5.0` / `120.0` | LibreOffice conversion is the slow part |
+| `GOTENBERG_TLS_VERIFY` | `true` | As for Kreuzberg |
+
+#### Chunking
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CHUNK_SPLIT_BY` | `markdown` | `markdown`, `token`, `word`, `sentence`, `passage` |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `400` / `80` | Chunk content size and overlap (tokens in token/markdown mode); clamped by `EMBEDDING_MAX_TOKENS` |
+| `CHUNK_MIN_SIZE` | `100` | Markdown mode: merge sections smaller than this; `0` disables |
+| `TOKENIZER_MODEL` | *(empty → `EMBEDDING_MODEL`)* | HuggingFace tokenizer used to size chunks |
+| **`TOKENIZER_REVISION`** | *(empty = HEAD)* | Pin the tokenizer to a commit SHA so an upstream change can't shift chunk boundaries |
+
+#### Dense embedder
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EMBEDDING_PROVIDER` | `openai-compat` | `openai-compat`, `tei`, or in-process `fastembed` |
+| **`EMBEDDING_API_BASE_URL`** / **`EMBEDDING_API_KEY`** | *(empty)* | Embedding endpoint (required by compose) |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `intfloat/multilingual-e5-large` / `1024` | Must match the retrieval agent; dim is fixed per collection |
+| `EMBEDDING_MAX_TOKENS` | `512` | Served model's hard input limit; chunk sizing ceiling |
+| `EMBEDDING_PREFIX_DOC` | `"passage: "` | Document prefix from the model card. (`EMBEDDING_PREFIX_QUERY` in `.env.example` is for the retrieval agent; this service doesn't read it) |
+| `EMBED_HEADERS_BREADCRUMB` | `true` | Prepend the markdown heading path to the embedded text |
+| `EMBEDDING_CONNECT_TIMEOUT` / `EMBEDDING_READ_TIMEOUT` | `5.0` / `30.0` | HTTP budget per attempt |
+| `EMBEDDING_MAX_RETRIES` | `16` | Rides out ~78–104 s of endpoint downtime |
+
+#### Sparse embedder & CPU
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ENABLE_SPARSE_EMBEDDINGS` | `true` | Add a sparse vector per point for hybrid search. Fixed per collection at creation |
+| `SPARSE_EMBEDDING_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions` | fastembed sparse model (~80 MB download on first boot) |
+| `EMBEDDING_THREADS` | `0` (all cores − 2) | ONNX thread cap for in-process embedders. Set explicitly if the container is limited with `cpus:` |
+| `OMP_NUM_THREADS` | `4` (Dockerfile/compose) | OpenMP backstop; env var only, keep ≤ `EMBEDDING_THREADS` |
+
+#### Qdrant
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `QDRANT_URI` | `http://qdrant:6333` | Vector store; readiness waits for it |
+| **`QDRANT_API_KEY`** | *(none)* | Set whenever Qdrant is reachable beyond a trusted network |
+| `QDRANT_INDEX` | `ingestion_files` | Physical collection shared by all tenants; must match the retrieval agent |
+
+#### S3
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `S3_ENDPOINT_URL` | *(empty = AWS)* | MinIO in dev, any S3-compatible store in prod |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | *(empty)* | Read-only credentials for Open WebUI's bucket |
+| `S3_REGION` | `us-east-1` | Needed by boto3 for signing |
+| **`S3_ALLOWED_BUCKETS`** | *(empty = unrestricted, startup warning)* | Comma-separated bucket allow-list. Without it, the request picks any bucket the credentials can read |
+
 ## Supported Embedding Models
 
 | Model | Dim | Doc / query prefix | Native sparse |
@@ -672,23 +751,23 @@ because they are **contracts with other services**:
 - `fastembed` → `FastembedDocumentEmbedder` (in-process inference; supports BGE-M3 dense)
 - `tei` → routes through `OpenAIDocumentEmbedder` (TEI exposes an OpenAI-compatible endpoint)
 
-`SPARSE_EMBEDDING_PROVIDER`:
+`ENABLE_SPARSE_EMBEDDINGS`:
 
-- `fastembed` → `FastembedSparseDocumentEmbedder` (BGE-M3 sparse, BM42, SPLADE family)
-- `none` → no sparse stage, dense-only pipeline
+- `true` → `FastembedSparseDocumentEmbedder` with `SPARSE_EMBEDDING_MODEL` (BGE-M3 sparse, BM42, SPLADE family)
+- `false` → no sparse stage, dense-only pipeline
 
 ## Extraction Engines
 
 | `EXTRACTION_ENGINE` | Status | Notes |
 | --- | --- | --- |
-| `kreuzberg` | day-one (default) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
+| `kreuzberg` | day-one (`auto`'s default route) | HTTP sidecar — `goldziher/kreuzberg` container in the parent stack (`KREUZBERG_URL`). 91+ formats, fully local; switch to `-easyocr` / `-paddle` image tags for OCR |
 | `pypdf` | day-one | In-process, PDF-only, lightweight |
 | `docling` | optional dep | Add `docling-haystack` to `pyproject.toml` and rebuild |
 | `unstructured` | optional dep | Add `unstructured-fileconverter-haystack` to `pyproject.toml` and rebuild |
 | `vision-llm` | day-one | Renders pages (Gotenberg sidecar for office→PDF, local PDF→PNG) and reconstructs structure via a multimodal LLM (`VISION_LLM_*`). For flowcharts / diagrams / scanned forms whose meaning is in the layout |
 | `hybrid-diagram` | day-one | For diagram `.docx`: native text from the package XML (authoritative, verbatim labels) + a vision-inferred diagram. Picks its vision profile per document — `diagram-topology` (Mermaid only) for a *vector* flowchart whose labels are Word shapes, or `figure` for a *raster* PNG diagram whose labels are pixels. Wraps `vision-llm`; non-docx falls through to it. The default diagram engine for `auto` |
 | `csv` | day-one | In-process (stdlib). `.csv`/`.tsv` rows → `column: value` lines, rows separated by a blank line, so every chunk keeps its column names. Delimiter from Excel `sep=` line, tab for `.tsv`, else sniffed (`;` `,` tab); UTF-16 BOM / UTF-8 / cp1252 fallback; row 1 is the header. Token/markdown splitters cut these docs only between rows, zero overlap |
-| `auto` | day-one | Per-document routing: `.csv`/`.tsv` → `csv`; a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
+| `auto` | day-one (default) | Per-document routing: `.csv`/`.tsv` → `csv`; a `.docx` with a vector flowchart (drawing/textbox text outweighs body text) **or** a large body raster image (a flattened PNG diagram, zero textboxes) → `EXTRACTION_ROUTER_DIAGRAM_ENGINE` (default `hybrid-diagram`); everything else → `EXTRACTION_ROUTER_DEFAULT`. See `EXTRACTION_ROUTER_*` |
 
 **`EXTRACTION_ROUTER_DIAGRAM_PROFILE`.** With the default diagram engine (`hybrid-diagram`)
 this is mostly moot — for a real docx the hybrid path picks its own profile
@@ -713,8 +792,9 @@ hero photos. **Edge:** the `figure` behaviour is specific to `hybrid-diagram`; i
 instead.
 
 **Seeing what `auto` chose.** The `/extract` response echoes the `engine` and `profile`
-used, and every chunk written to Qdrant carries `meta.extractor` / `meta.vision_profile`.
-For the `/ingest` path (Open WebUI's normal flow), set **`LOG_LEVEL_APP=DEBUG`** to log the
-per-document routing decision — the detector signal (textbox: `textboxes`/`body_words`/`ratio`;
-raster: `images`/`max_image_emu`), the chosen `engine=… profile=…`, and the hybrid/vision
-branch — visible in the container logs (`docker logs <ingestion-container>`).
+used. On the `/ingest` path, every chunk carries `meta.extraction_engine` /
+`meta.extraction_route` (and, for the vision engines, `meta.extractor` /
+`meta.vision_profile`), the response includes an `extraction` object, and the routing
+decision (`engine=… signal=…`) logs at INFO. Set **`LOG_LEVEL_APP=DEBUG`** to also log
+the detector metrics (textbox: `textboxes`/`body_words`/`ratio`; raster:
+`images`/`max_image_emu`) and the hybrid/vision branch.
