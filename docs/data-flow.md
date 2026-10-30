@@ -22,6 +22,7 @@ configuration as actually deployed by the parent stack**.
 | `ENABLE_SPARSE_EMBEDDINGS` | `true` | `true` |
 | `SPARSE_EMBEDDING_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions` | same |
 | `QDRANT_URI` / `QDRANT_INDEX` | `http://qdrant:6333` / `ingestion_files` | same |
+| `INGEST_MAX_CONCURRENCY` | `4` | `4` _(not set → default)_ |
 | `S3_*` | MinIO | MinIO (`http://minio:9000`), allowlisted to bucket `openwebui` |
 
 The **Effective** column is what the parent stack's `docker-compose.yml` sets;
@@ -74,35 +75,40 @@ the client gives up while the worker thread keeps running and, via the blue/gree
 overwrite, still commits a good version: the UI shows `failed` but Qdrant is
 indexed. Raising the budget to 900s clears the realistic single-doc worst case; a
 pathological multi-call document can still exceed it (the residual accepted for
-this sync model — async ingest is the durable fix, tracked in `FINDINGS.md` #1).
+this sync model — async ingest is the durable fix). Time spent queued behind
+`INGEST_MAX_CONCURRENCY` also counts against this budget.
 
 ## 3. Request lifecycle (entry layer)
 
-A single handler authenticates, dispatches on `Content-Type`, lands the file on
-local disk, builds `meta`, then offloads the blocking pipeline run to a worker
-thread.
+A single handler authenticates, dispatches on `Content-Type`, builds and
+validates `meta` **before** touching S3 or disk, lands the file on local disk,
+then offloads the blocking pipeline run to a worker thread.
 
 ```mermaid
 flowchart TD
     START["PUT /api/v1/ingest"] --> AUTH{"Bearer token<br/>matches API_KEY?"}
-    AUTH -->|no| E401["401 Unauthorized"]
+    AUTH -->|"no / missing"| E401["401 Unauthorized<br/>(WWW-Authenticate: Bearer)"]
     AUTH -->|yes| CT{"Content-Type?"}
 
-    CT -->|application/json| J1["validate JSON body<br/>(file_id, filename,<br/>collection_name, user_id,<br/>s3_bucket, s3_key, overwrite)"]
-    J1 --> J2{"bucket on the<br/>S3 allowlist?"}
+    CT -->|application/json| J1["validate JSON body → meta<br/>(file_id, filename,<br/>collection_name, user_id,<br/>s3_bucket, s3_key, overwrite)"]
+    J1 --> JB{"collection binding OK?"}
+    JB -->|no| E403b["403 INVALID_REQUEST"]
+    JB -->|yes| J2{"bucket on the<br/>S3 allowlist?"}
     J2 -->|no| E403["403 INVALID_REQUEST"]
     J2 -->|yes| J3["fetch object from S3<br/>to a tempfile<br/>(size-checked, worker thread)"]
-    J3 --> META["build meta dict"]
+    J3 --> RUN
 
-    CT -->|multipart/form-data| M1["stream upload to tempfile<br/>(1 MB chunks, size-capped)"]
-    M1 --> M2["read form fields → meta<br/>(required fields)"]
-    M2 --> META
+    CT -->|multipart/form-data| M0{"declared Content-Length<br/>> MAX_UPLOAD_BYTES + 1 MiB?"}
+    M0 -->|yes| E413["413 INVALID_REQUEST<br/>(body never parsed)"]
+    M0 -->|no| M1["parse form; read fields → meta<br/>(required fields)"]
+    M1 --> MB{"collection binding OK?"}
+    MB -->|no| E403c["403 INVALID_REQUEST"]
+    MB -->|yes| M2["stream file part to tempfile<br/>(1 MB chunks, size-capped)"]
+    M2 --> RUN
 
     CT -->|other| E415["415 Unsupported Media Type"]
 
-    META --> BIND{"collection name matches<br/>user_id / file_id?<br/>(user-memory- / file- prefixes)"}
-    BIND -->|no| E403b["403 INVALID_REQUEST"]
-    BIND -->|yes| RUN["run indexing pipeline<br/>(worker thread)"]
+    RUN["wait for a slot<br/>(INGEST_MAX_CONCURRENCY)<br/>→ run indexing pipeline<br/>(worker thread)"]
     RUN --> RESP["200 IngestResponse<br/>{status, collection_name,<br/>chunks_count, extraction}"]
     RUN -->|exception| EMAP["map error →<br/>500 + IngestError code"]
 
@@ -110,10 +116,17 @@ flowchart TD
     EMAP --> FIN
 ```
 
+The collection-binding check (`user-memory-` / `file-` prefixes must match
+`user_id` / `file_id`) runs before any download or disk write, so a rejected
+request (400/403/413) leaves no tempfile behind.
+
 **Threading model.** Both the blocking S3 fetch and the synchronous Haystack
 pipeline run happen in worker threads, so the event loop — and the `/health` /
-`/health/ready` probes — stay responsive during a long ingest. The tempfile is
-always removed, on both success and failure.
+`/health/ready` probes — stay responsive during a long ingest. At most
+`INGEST_MAX_CONCURRENCY` pipeline runs (default 4, per uvicorn worker, `0` =
+unlimited) hold a thread at once; the rest wait, keeping the shared thread pool
+free for S3 fetches and `DELETE`s. The tempfile is always removed, on both
+success and failure.
 
 The `meta` dict that flows into the pipeline carries:
 `file_id`, `filename`, `collection_name`, `collection_type`, `user_id`,
@@ -127,12 +140,15 @@ The `meta` dict that flows into the pipeline carries:
 The cached pipeline has one fixed converter slot, so the per-document engine
 decision lives _inside_ a routing converter. It builds one inner converter per
 routable engine at startup, then classifies and delegates per source.
-Classification is `.docx`-only today; everything else takes the default route.
+Classification looks at `.csv`/`.tsv` (by extension) and `.docx` (by content);
+everything else takes the default route.
 
 ```mermaid
 flowchart TD
     SRC["source file"] --> CLS["classify the document"]
-    CLS --> EXT{"suffix == .docx?"}
+    CLS --> CSVX{"suffix .csv / .tsv?"}
+    CSVX -->|yes| CSV["engine = csv<br/>signal = csv<br/>(row-per-chunk splitting)"]
+    CSVX -->|no| EXT{"suffix == .docx?"}
     EXT -->|no| DEF["signal = default"]
 
     EXT -->|yes| TB{"textbox signal:<br/>≥ 20 shape/textbox text units<br/>AND ≥ 2× more text in shapes<br/>than in the body?"}
@@ -144,21 +160,24 @@ flowchart TD
     DEF --> KRZ["route → EXTRACTION_ROUTER_DEFAULT<br/>= kreuzberg"]
     DIAG --> HYB["route → hybrid-diagram"]
     DIAGR --> HYB
+    CSV --> STAMP
 
     KRZ --> STAMP["stamp meta.extraction_engine<br/>+ meta.extraction_route<br/>{signal, ...metrics}"]
     HYB --> STAMP
     STAMP --> LOG["surfaced 3 ways:<br/>INFO log 'routing X -> engine=…'<br/>response.extraction<br/>meta on every chunk"]
+    EXT -.->|"yes, but a zip member<br/>declares > 50 MB"| FAIL["ExtractionError →<br/>EXTRACTION_FAILED"]
 ```
 
 Detection reads only the document body (plus the document properties for the
-body-word count), so it is zip-bomb safe and header/footer logos never trip the
-raster signal. The thresholds are all tunable via the `EXTRACTION_ROUTER_*`
-settings; the raster gate has a third, opt-in condition not shown above:
-`EXTRACTION_ROUTER_MIN_IMAGE_WORD_RATIO` (default `0` = off) additionally
-requires the image-area-to-word-count ratio to clear a floor, guarding against
-a lone large decorative photo in a prose-heavy doc. On any structural surprise
-classification returns the **default** route — it never raises for routing
-reasons.
+body-word count), so header/footer logos never trip the raster signal. Every
+zip member read is size-capped: a member declaring more than 50 MB (a zip bomb)
+raises `ExtractionError` and fails the ingest with `EXTRACTION_FAILED` rather
+than being forwarded to the default engine. The thresholds are all tunable via
+the `EXTRACTION_ROUTER_*` settings; the raster gate has a third, opt-in
+condition not shown above: `EXTRACTION_ROUTER_MIN_IMAGE_WORD_RATIO` (default
+`0` = off) additionally requires the image-area-to-word-count ratio to clear a
+floor, guarding against a lone large decorative photo in a prose-heavy doc. On
+any other structural surprise classification returns the **default** route.
 
 > **Where the profile is really chosen.** The router itself only decides
 > _engine + signal_ and passes along the configured
@@ -175,10 +194,10 @@ strengths:
 - **Native docx text** is the authoritative body — every label pulled verbatim
   from the document package.
 - **The vision model supplies only the diagram.** Rendering goes office→PDF via
-  the **Gotenberg** sidecar, then PDF→PNG locally, then a multimodal LLM
-  reconstructs structure. Profile is `diagram-topology` (Mermaid graph, labels
-  grounded in the native text) for a _vector_ flowchart, or `figure` (read labels
-  from pixels) for a flattened _raster_ image.
+  the **Gotenberg** sidecar, then PDF→PNG locally (each page capped at 16 MP),
+  then a multimodal LLM reconstructs structure. Profile is `diagram-topology`
+  (Mermaid graph, labels grounded in the native text) for a _vector_ flowchart,
+  or `figure` (read labels from pixels) for a flattened _raster_ image.
 - Non-`.docx` sources fall through to the plain vision path.
 
 ---
@@ -313,9 +332,15 @@ orphaned teardown: any leftover partial version matches the next sweep's
 `embedding_dim=1024`, sparse embeddings enabled, and multitenancy HNSW
 (no global graph, per-tenant subgraphs). Each point carries **two named
 vectors** — a dense vector (used by the per-tenant HNSW) and a sparse vector
-(Qdrant's inverted index).
+(`text-sparse`, Qdrant's inverted index) with the **IDF modifier**: BM42
+stores only in-document term weights, so Qdrant applies collection-wide IDF
+at query time. A collection created before IDF was enabled is migrated in
+place at startup (no reindex).
 
-**Payload indexes, created at startup:**
+**Startup.** `init_pipeline` forces the collection into existence, then the
+startup hooks add the payload indexes and the IDF modifier — so both exist
+from first boot, and `DELETE` before the first ingest returns
+`chunks_deleted: 0` instead of failing. Payload indexes:
 
 - `meta.collection_name` — keyword index marked as the tenant key; gives each
   collection its own HNSW subgraph.
@@ -347,8 +372,8 @@ Each written point's payload:
         "headers_breadcrumb": "<h1> > <h2> > ...",  # joined form, embedded when EMBED_HEADERS_BREADCRUMB; omitted when no headings
         "split_id":        <int>,                  # chunk index within file
         # Auto-routing classification (EXTRACTION_ENGINE=auto):
-        "extraction_engine": "kreuzberg | hybrid-diagram | ...",
-        "extraction_route":  {"signal": "textbox|raster|default", ...metrics},
+        "extraction_engine": "kreuzberg | hybrid-diagram | csv | ...",
+        "extraction_route":  {"signal": "textbox|raster|csv|default", ...metrics},
         # Optional document-level metadata (e.g. from kreuzberg): title, subject,
         # authors, created_at, languages — omitted when missing/empty.
     }
@@ -363,9 +388,9 @@ The route layer maps pipeline exceptions to an `IngestError` code:
 | --- | --- | --- |
 | Bad/missing Bearer token | 401 | _(not IngestError)_ |
 | Validation / bad bucket / collection mismatch / bad content-type | 400 / 403 / 415 | `INVALID_REQUEST` |
-| Upload or S3 object exceeds `MAX_UPLOAD_BYTES` | 413 | `INVALID_REQUEST` |
+| Upload, declared multipart `Content-Length`, or S3 object exceeds `MAX_UPLOAD_BYTES` | 413 | `INVALID_REQUEST` |
 | S3 fetch (404 / auth / network) | 500 | `S3_FETCH_FAILED` |
-| Extraction (kreuzberg/vision/etc.) | 500 | `EXTRACTION_FAILED` |
+| Extraction (kreuzberg incl. non-JSON reply, vision, oversized docx member, etc.) | 500 | `EXTRACTION_FAILED` |
 | Dense embedding | 500 | `EMBEDDING_FAILED` |
 | Sparse embedding | 500 | `SPARSE_EMBEDDING_FAILED` |
 | Qdrant write | 500 | `QDRANT_WRITE_FAILED` |
