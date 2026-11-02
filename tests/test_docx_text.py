@@ -4,7 +4,10 @@ Fixtures craft a minimal ``word/document.xml`` inside a real zip so the
 substring/regex extraction is exercised end-to-end without a sample binary.
 """
 
+import struct
+import tracemalloc
 import zipfile
+import zlib
 
 import pytest
 
@@ -165,3 +168,32 @@ def test_zip_bomb_member_is_refused_without_decompressing(tmp_path):
         extract_docx_lines(str(p))
     with pytest.raises(ExtractionError, match="cap"):
         classify_engine(str(p), settings)
+
+
+def _forged_header_bomb(path, real_size: int, declared_size: int) -> None:
+    """Zip whose single deflated member lies about its uncompressed size."""
+    comp = zlib.compressobj(9, zlib.DEFLATED, -15)
+    data = comp.compress(b"\0" * real_size) + comp.flush()
+    name = b"word/document.xml"
+    fields = (20, 0, 8, 0, 0, 0, len(data), declared_size, len(name), 0)
+    local = struct.pack("<4s5H3L2H", b"PK\x03\x04", *fields) + name + data
+    central = struct.pack("<4s6H3L5H2L", b"PK\x01\x02", 20, *fields, 0, 0, 0, 0, 0) + name
+    eocd = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 1, 1, len(central), len(local), 0)
+    path.write_bytes(local + central + eocd)
+
+
+def test_forged_header_zip_bomb_is_bounded(tmp_path):
+    # Header claims 1000 bytes; the stream inflates to 100 MB.
+    p = tmp_path / "forged.docx"
+    _forged_header_bomb(p, real_size=100 * 1024 * 1024, declared_size=1000)
+    tracemalloc.start()
+    try:
+        lines = extract_docx_lines(str(p))
+        decision = classify_engine(str(p), settings)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert lines == []
+    assert decision.engine is None
+    assert decision.signal == "default"
+    assert peak < 10 * 1024 * 1024

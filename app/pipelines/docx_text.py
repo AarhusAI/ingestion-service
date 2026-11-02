@@ -38,17 +38,21 @@ MAX_DOCX_MEMBER_BYTES = 50 * 1024 * 1024
 
 
 def read_docx_member(zf: zipfile.ZipFile, name: str) -> bytes:
-    """``zf.read(name)`` that refuses members declaring more than the cap.
+    """Read a zip member, never decompressing more than the cap.
 
-    ``ZipExtFile`` stops at the declared ``file_size``, so checking the header
-    bounds the decompressed bytes. Missing member still raises ``KeyError``.
+    The declared-``file_size`` check is the fast path for honest headers. The
+    header can lie, so ``f.read(size)`` also bounds the decompression itself
+    (``zf.read`` would inflate up to 1 GiB in one call before truncating); a
+    lying header then surfaces as ``zipfile.BadZipFile`` (CRC mismatch).
+    Missing member still raises ``KeyError``.
     """
     size = zf.getinfo(name).file_size
     if size > MAX_DOCX_MEMBER_BYTES:
         raise ExtractionError(
             f"docx member {name} declares {size} bytes, over the {MAX_DOCX_MEMBER_BYTES}-byte cap"
         )
-    return zf.read(name)
+    with zf.open(name) as f:
+        return f.read(size)
 
 
 # Legacy VML mirror of each DrawingML shape — Word emits both inside

@@ -10,8 +10,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   existing ones are migrated in place at startup (no reindex).
 - The collection is created at startup, so payload indexes exist from first boot and `DELETE` before the first ingest
   returns 200 instead of 500.
-- docx zip members over 50 MB (declared size) are refused with `EXTRACTION_FAILED` (zip-bomb guard); PDF page renders
-  are capped at 16 MP.
+- docx zip members over 50 MB (declared size) are refused with `EXTRACTION_FAILED` (zip-bomb guard), and reads are
+  bounded to the declared size so a forged header can't force a large decompression; PDF page renders are capped at
+  16 MP.
 - New `INGEST_MAX_CONCURRENCY` (default `4`, `0` = unlimited): pipeline runs in flight per worker.
 - Auth: missing header → 401 with `WWW-Authenticate: Bearer`; non-ASCII tokens → 401 (was 500).
 - Ingest: collection-binding and form-field checks run before the S3 fetch / temp-file spool (no orphaned temp files
