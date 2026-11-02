@@ -120,7 +120,13 @@ class KreuzbergRemoteConverter:
                 # class names entirely; see sec.md Finding 5).
                 raise ExtractionError(f"kreuzberg extract failed for {path.name}: {exc}") from exc
 
-            result = _first_result(resp.json())
+            try:
+                payload = resp.json()
+            except ValueError as exc:
+                raise ExtractionError(
+                    f"kreuzberg returned non-JSON for {path.name}: {exc}"
+                ) from exc
+            result = _first_result(payload)
             if result is None:
                 raise ExtractionError(
                     f"kreuzberg returned an unrecognized response shape for {path.name}"

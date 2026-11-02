@@ -10,8 +10,8 @@ model instead — the encoder budget is spent on the figure, independent of any
 DPI/encoder ceiling.
 
 We read only the two members we need (``word/document.xml`` and
-``word/_rels/document.xml.rels``) — never ``extractall`` (zip-bomb safe), the same
-defensive contract as ``app/pipelines/docx_text.py`` and ``app/pipelines/detectors.py``.
+``word/_rels/document.xml.rels``) — never ``extractall`` — plus the resolved images,
+every read size-capped by ``read_docx_member`` against zip bombs.
 Resolving relationships from ``document.xml.rels`` (not the footer/header ``.rels``)
 keeps this to *body* images, so header/footer logos are excluded for free.
 
@@ -31,7 +31,7 @@ from pathlib import Path
 from app.config import Settings
 from app.log_utils import sanitize_for_log
 from app.pipelines.detectors import _EXTENT_RE
-from app.pipelines.docx_text import _FALLBACK_RE
+from app.pipelines.docx_text import _FALLBACK_RE, read_docx_member
 
 log = logging.getLogger(__name__)
 
@@ -70,8 +70,10 @@ def extract_docx_figure_images(source: str, settings: Settings) -> list[bytes]:
     try:
         with zipfile.ZipFile(source) as zf:
             try:
-                document_xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
-                rels_xml = zf.read("word/_rels/document.xml.rels").decode(
+                document_xml = read_docx_member(zf, "word/document.xml").decode(
+                    "utf-8", errors="replace"
+                )
+                rels_xml = read_docx_member(zf, "word/_rels/document.xml.rels").decode(
                     "utf-8", errors="replace"
                 )
             except KeyError:
@@ -111,7 +113,7 @@ def extract_docx_figure_images(source: str, settings: Settings) -> list[bytes]:
                 )
                 resolved = resolved[:_MAX_FIGURES]
 
-            images = [zf.read(member) for member in resolved]
+            images = [read_docx_member(zf, member) for member in resolved]
     except (zipfile.BadZipFile, OSError, ValueError) as exc:
         log.debug("docx figure extraction failed for %s: %s", name, exc)
         return []

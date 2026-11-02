@@ -3,8 +3,8 @@
 Pulls the document's text straight from ``word/document.xml`` without a full
 Office parse — the motivating case is a swim-lane flowchart whose labels live in
 hundreds of drawing text boxes that plain-text extractors (Tika/POI) never
-reach. We read only that one zip member (never ``extractall`` — zip-bomb safe),
-mirroring the safe single-member read in ``app/pipelines/detectors.py``.
+reach. We read only that one zip member (never ``extractall``), size-capped by
+``read_docx_member`` against zip bombs.
 
 Word stores text as ``<w:t>`` runs grouped into ``<w:p>`` paragraphs; both body
 paragraphs and drawing-text-box paragraphs (nested inside ``<w:txbxContent>`` /
@@ -29,7 +29,31 @@ import re
 import zipfile
 from pathlib import Path
 
+from app.pipelines.errors import ExtractionError
+
 log = logging.getLogger(__name__)
+
+# ponytail: fixed cap; promote to a setting if a real docx hits it
+MAX_DOCX_MEMBER_BYTES = 50 * 1024 * 1024
+
+
+def read_docx_member(zf: zipfile.ZipFile, name: str) -> bytes:
+    """Read a zip member, never decompressing more than the cap.
+
+    The declared-``file_size`` check is the fast path for honest headers. The
+    header can lie, so ``f.read(size)`` also bounds the decompression itself
+    (``zf.read`` would inflate up to 1 GiB in one call before truncating); a
+    lying header then surfaces as ``zipfile.BadZipFile`` (CRC mismatch).
+    Missing member still raises ``KeyError``.
+    """
+    size = zf.getinfo(name).file_size
+    if size > MAX_DOCX_MEMBER_BYTES:
+        raise ExtractionError(
+            f"docx member {name} declares {size} bytes, over the {MAX_DOCX_MEMBER_BYTES}-byte cap"
+        )
+    with zf.open(name) as f:
+        return f.read(size)
+
 
 # Legacy VML mirror of each DrawingML shape — Word emits both inside
 # <mc:AlternateContent>. Drop the fallback so shape text isn't counted twice.
@@ -60,8 +84,9 @@ def extract_docx_lines(source: str) -> list[str]:
     """
     try:
         with zipfile.ZipFile(source) as zf:
-            # Read ONLY the one member we need — never extractall (zip-bomb safe).
-            document_xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
+            document_xml = read_docx_member(zf, "word/document.xml").decode(
+                "utf-8", errors="replace"
+            )
     except (zipfile.BadZipFile, KeyError, OSError, ValueError) as exc:
         log.debug("docx text extraction failed for %s: %s", Path(source).name, exc)
         return []

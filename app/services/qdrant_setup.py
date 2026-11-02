@@ -1,18 +1,24 @@
 """Qdrant startup hook.
 
-``QdrantDocumentStore`` creates the collection on first write but doesn't
-create payload indexes. We do that explicitly here so per-tenant HNSW kicks
-in from day one — important for retrieval performance once the agent is
-rewritten in Phase 3.
+``init_pipeline`` forces the collection into existence, but
+``QdrantDocumentStore`` doesn't create payload indexes or migrate the sparse
+IDF modifier on an existing collection. We do both explicitly here so
+per-tenant HNSW and BM42 scoring work from day one.
 """
 
 import logging
 
+from haystack_integrations.document_stores.qdrant.document_store import SPARSE_VECTORS_NAME
 from qdrant_client.http.exceptions import UnexpectedResponse
-from qdrant_client.http.models import KeywordIndexParams, KeywordIndexType, PayloadSchemaType
+from qdrant_client.http.models import (
+    KeywordIndexParams,
+    KeywordIndexType,
+    Modifier,
+    PayloadSchemaType,
+    SparseVectorParams,
+)
 
-from app.config import settings
-from app.pipelines.indexing import _raw_qdrant_client
+from app.pipelines.indexing import _active_settings, _raw_qdrant_client
 
 log = logging.getLogger(__name__)
 
@@ -23,21 +29,16 @@ def ensure_payload_indexes() -> None:
     ingest_version).
 
     Idempotent — Qdrant returns 409 if the index already exists, which we swallow.
-    No-op if the collection doesn't yet exist (first ingest creates it; we'll
-    re-run this from the next startup).
+    No-op if the collection is missing (only possible if it was deleted
+    between ``init_pipeline`` and this call).
     """
     client = _raw_qdrant_client()
-    index_name = settings.qdrant_index
+    index_name = _active_settings().qdrant_index
 
     try:
         client.get_collection(index_name)
     except (UnexpectedResponse, ValueError) as exc:
-        log.info(
-            "qdrant collection %r not yet created; payload index will be added on next startup "
-            "after the first ingest creates it (%s)",
-            index_name,
-            exc,
-        )
+        log.warning("qdrant collection %r missing; skipping payload indexes (%s)", index_name, exc)
         return
 
     # - meta.collection_name: the tenant index the multitenancy HNSW keys off.
@@ -71,6 +72,32 @@ def ensure_payload_indexes() -> None:
             if exc.status_code != 409:
                 raise
             log.debug("payload index on %s.%s already exists", index_name, field_name)
+
+
+def ensure_sparse_idf() -> None:
+    """Enable the IDF modifier on the sparse vector of an existing collection.
+
+    New collections get it from ``sparse_idf=True`` at creation; collections
+    created before that flag need this in-place update (no reindex — IDF is
+    computed by Qdrant at query time). Idempotent.
+    """
+    s = _active_settings()
+    if not s.enable_sparse_embeddings:
+        return
+    client = _raw_qdrant_client()
+    try:
+        info = client.get_collection(s.qdrant_index)
+    except (UnexpectedResponse, ValueError) as exc:
+        log.warning("qdrant collection %r missing; skipping IDF check (%s)", s.qdrant_index, exc)
+        return
+    sparse = (info.config.params.sparse_vectors or {}).get(SPARSE_VECTORS_NAME)
+    if sparse is None or sparse.modifier == Modifier.IDF:
+        return
+    client.update_collection(
+        collection_name=s.qdrant_index,
+        sparse_vectors_config={SPARSE_VECTORS_NAME: SparseVectorParams(modifier=Modifier.IDF)},
+    )
+    log.info("enabled IDF modifier on %s.%s", s.qdrant_index, SPARSE_VECTORS_NAME)
 
 
 def health_check() -> bool:

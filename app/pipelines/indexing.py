@@ -163,6 +163,10 @@ def init_pipeline(settings: Settings | None = None) -> None:
     s = settings or global_settings
     _settings = s
     _document_store = _build_document_store(s)
+    # Forces the store's lazy client init, which creates the collection now, so
+    # qdrant_setup can add payload indexes / IDF on a fresh deploy and DELETE
+    # before the first ingest finds the collection.
+    _document_store.count_documents()
     _pipeline = _build_pipeline(s, _document_store)
 
     started = time.monotonic()
@@ -206,6 +210,9 @@ def _build_document_store(s: Settings) -> QdrantDocumentStore:
         index=s.qdrant_index,
         embedding_dim=s.embedding_dim,
         use_sparse_embeddings=s.enable_sparse_embeddings,
+        # BM42 sparse vectors carry only in-document weights; Qdrant must apply
+        # collection-wide IDF at query time or rare terms get no boost.
+        sparse_idf=s.enable_sparse_embeddings,
         # Multitenancy HNSW: per-tenant subgraphs keyed off the meta.collection_name
         # payload index (see app/services/qdrant_setup.py). Applies to the dense
         # vector; sparse vectors live in Qdrant's inverted index.
@@ -485,10 +492,9 @@ def delete_by_file_id(file_id: str) -> int:
     Unlike ``_delete_ingest_version`` (which swallows every error to tolerate a
     missing collection during the ingest teardown path), this does a direct,
     non-swallowing ``client.delete`` so a genuine Qdrant failure surfaces to the
-    route as ``DELETE_FAILED`` instead of masquerading as success. The physical
-    collection is created at startup by ``qdrant_setup``, so once the pipeline is
-    ready the collection exists and neither the count nor the delete raises
-    "collection not found".
+    route as ``DELETE_FAILED`` instead of masquerading as success. ``init_pipeline``
+    forces collection creation, so once the pipeline is ready the collection
+    exists and neither the count nor the delete raises "collection not found".
     """
     if _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")

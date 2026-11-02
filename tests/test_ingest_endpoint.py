@@ -555,6 +555,36 @@ async def test_multipart_oversize_rejected_with_413(client, api_headers, monkeyp
     run_mock.assert_not_called()
 
 
+async def test_multipart_declared_oversize_rejected_before_parsing(
+    client, api_headers, monkeypatch
+):
+    """A Content-Length over the cap is refused before request.form() spools it."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_bytes", 1024)
+    headers = {
+        **api_headers,
+        "content-type": "multipart/form-data; boundary=x",
+        "content-length": str(1024 + 2 * 1024 * 1024),
+    }
+    with patch("starlette.requests.Request.form") as form_mock:
+        response = await client.put("/api/v1/ingest", content=b"", headers=headers)
+
+    assert response.status_code == 413
+    form_mock.assert_not_called()
+
+
+async def test_multipart_missing_field_leaves_no_temp_file(client, api_headers):
+    """A 400 on a missing form field must not orphan the spooled upload."""
+    files = {"file": ("orphan.pdf", BytesIO(b"%PDF-fake"), "application/pdf")}
+    data = {"filename": "orphan.pdf", "collection_name": "file-abc", "user_id": "u-1"}
+    with patch("app.routes.ingest.stream_upload_to_tempfile") as stream_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 400
+    stream_mock.assert_not_called()
+
+
 async def test_s3_oversize_rejected_with_413(client, api_headers, monkeypatch):
     """S3 object with ContentLength > max_upload_bytes returns 413 before download."""
     from app.config import settings
@@ -656,7 +686,7 @@ async def test_file_collection_must_match_file_id(client, api_headers, tmp_path)
         fh.write(b"%PDF-fake")
 
     with (
-        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local) as fetch_mock,
         patch("app.routes.ingest.run_indexing_pipeline", return_value=(42, None)) as run_mock,
     ):
         response = await client.put(
@@ -676,6 +706,8 @@ async def test_file_collection_must_match_file_id(client, api_headers, tmp_path)
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "INVALID_REQUEST"
     run_mock.assert_not_called()
+    # Binding is checked before any S3 download.
+    fetch_mock.assert_not_called()
 
 
 async def test_knowledge_collection_passes_through(client, api_headers, tmp_path):

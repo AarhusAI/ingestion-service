@@ -130,6 +130,21 @@ def test_detection_error_falls_back_to_default():
     assert out[0].content == "default out"
 
 
+def test_oversized_docx_member_fails_ingest_instead_of_falling_back():
+    from app.pipelines.errors import ExtractionError
+
+    default, _vision, build = _fakes()
+    with (
+        patch.object(rc, "build_converter", side_effect=build),
+        patch.object(rc, "classify_engine", side_effect=ExtractionError("zip bomb")),
+    ):
+        conv = rc.RoutingConverter(_settings())
+        with pytest.raises(ExtractionError):
+            conv.run(sources=["x.docx"], meta={})
+
+    assert not default.run.called
+
+
 def test_warm_up_fans_out_to_inner_converters():
     default, vision, build = _fakes()
     with patch.object(rc, "build_converter", side_effect=build):
