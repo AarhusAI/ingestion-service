@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
 
     init_pipeline()
     qdrant_setup.ensure_payload_indexes()
+    qdrant_setup.ensure_sparse_idf()
 
     yield
 

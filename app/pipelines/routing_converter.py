@@ -24,6 +24,7 @@ from app.config import Settings
 from app.log_utils import sanitize_for_log
 from app.pipelines.converters import build_converter, meta_for
 from app.pipelines.detectors import RoutingDecision, classify_engine
+from app.pipelines.errors import ExtractionError
 from app.pipelines.vision_profiles import KNOWN_PROFILES
 
 log = logging.getLogger(__name__)
@@ -115,7 +116,7 @@ class RoutingConverter:
         return {"documents": docs}
 
     def _classify(self, source: str) -> RoutingDecision:
-        """Resolve the final routing decision for ``source`` — never raises.
+        """Resolve the final routing decision for ``source``.
 
         Wraps :func:`classify_engine` (which is itself exception-safe for
         routing reasons) and resolves the detector's engine (``None`` = default,
@@ -124,6 +125,10 @@ class RoutingConverter:
         """
         try:
             decision = classify_engine(source, self._settings)
+        except ExtractionError:
+            # Oversized zip member (zip bomb): fail the ingest, don't hand the
+            # same file to the default engine.
+            raise
         except Exception:
             log.warning(
                 "routing detection failed for %s; using default engine %s",
