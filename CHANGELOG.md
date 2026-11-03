@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-11-03
+
 - Sparse vectors now use Qdrant's IDF modifier (required for BM42 scoring). New collections get it at creation;
   existing ones are migrated in place at startup (no reindex).
 - The collection is created at startup, so payload indexes exist from first boot and `DELETE` before the first ingest
